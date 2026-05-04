@@ -1,0 +1,318 @@
+name: 📥 Torrent Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      torrent_link:
+        description: '🧲 Magnet link or .torrent URL'
+        required: true
+        type: string
+      split_threshold_mb:
+        description: '📦 Split files larger than (MB) — 0 = never'
+        required: false
+        type: number
+        default: 90
+      upload_to_gofile:
+        description: '☁️ Also upload to gofile.io?'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  download-and-deliver:
+    name: 🚀 Torrent Download & Deliver
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📂 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: 🔧 Install Dependencies (with retry)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "🔄 apt-get attempt $i..."
+            sudo apt-get update && sudo apt-get install -y aria2 curl jq zip && break || sleep 10
+          done
+
+      - name: ⚙️ Detect System Resources & Create Aria2 Config
+        run: |
+          set -euo pipefail
+          CPU_CORES=$(nproc)
+          MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+          MEM_GB=$((MEM_KB / 1024 / 1024))
+
+          # Tune based on available memory (GitHub runner has ~7 GB)
+          if [ "$MEM_GB" -lt 2 ]; then
+            MAX_CONN=8; MAX_CONC=2; MAX_PER_SERVER=4; SPLIT_SIZE="1M"
+          elif [ "$MEM_GB" -lt 4 ]; then
+            MAX_CONN=16; MAX_CONC=3; MAX_PER_SERVER=8; SPLIT_SIZE="1M"
+          else
+            MAX_CONN=24; MAX_CONC=4; MAX_PER_SERVER=12; SPLIT_SIZE="1M"
+          fi
+
+          echo "⚡ System: ${CPU_CORES} cores, ${MEM_GB} GB RAM"
+          echo "⚡ Aria2: ${MAX_CONN} connections, ${SPLIT_SIZE} min-split-size"
+
+          cat > /tmp/aria2_silent.conf << EOF
+          # General
+          dir=./downloads
+          file-allocation=falloc
+          check-integrity=true
+          continue=true
+          always-resume=true
+          auto-save-interval=30
+          save-session-interval=30
+
+          # Connections
+          max-concurrent-downloads=${MAX_CONC}
+          max-connection-per-server=${MAX_PER_SERVER}
+          min-split-size=${SPLIT_SIZE}
+          split=${MAX_CONN}
+          max-tries=5
+          retry-wait=10
+          timeout=300
+          connect-timeout=60
+          lowest-speed-limit=1K
+          max-download-limit=0
+
+          # BitTorrent
+          bt-max-peers=100
+          bt-request-peer-speed-limit=50K
+          bt-min-crypto-level=arc4
+          bt-require-crypto=false
+          bt-max-open-files=100
+          bt-tracker-connect-timeout=60
+          bt-tracker-timeout=60
+          seed-time=0
+          max-upload-limit=1K
+          bt-stop-timeout=0
+          bt-hash-check-seed=true
+          bt-seed-unverified=true
+          bt-save-metadata=true
+          follow-torrent=mem
+          bt-enable-lpd=true
+          bt-tracker-interval=300
+
+          # Network
+          enable-http-keep-alive=true
+          enable-http-pipelining=true
+          piece-length=1M
+
+          # CRITICAL: Silent logging for CI/CD
+          show-console-readout=false
+          summary-interval=300
+          log-level=error
+          console-log-level=error
+          quiet=true
+          EOF
+
+      - name: 🧲 Enhance Magnet Link with Extra Trackers
+        id: enhance
+        run: |
+          set -euo pipefail
+          TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
+
+          # If it's already a magnet link, append extra trackers
+          if [[ "$TORRENT_LINK" == magnet:* ]]; then
+            TRACKERS=(
+              "https://tracker.opentrackr.org:1337/announce"
+              "http://tracker.openbittorrent.com:80/announce"
+              "https://tracker.files.fm:6969/announce"
+              "https://tracker.moeking.me:6969/announce"
+              "https://tracker.dler.org:6969/announce"
+              "udp://tracker.opentrackr.org:1337/announce"
+              "udp://tracker.openbittorrent.com:6969/announce"
+              "udp://tracker.moeking.me:6969/announce"
+              "udp://tracker.dler.org:6969/announce"
+              "udp://tracker.torrent.eu.org:451/announce"
+              "http://tracker.bt4g.com:2095/announce"
+            )
+            ENHANCED="$TORRENT_LINK"
+            for tr in "${TRACKERS[@]}"; do
+              ENHANCED="${ENHANCED}&tr=${tr}"
+            done
+            echo "enhanced_link=$ENHANCED" >> $GITHUB_OUTPUT
+            echo "🔗 Enhanced magnet link with ${#TRACKERS[@]} trackers"
+          else
+            echo "enhanced_link=$TORRENT_LINK" >> $GITHUB_OUTPUT
+            echo "🔗 Using direct URL: $TORRENT_LINK"
+          fi
+
+      - name: ⬇️ Download via Aria2 (with progress monitoring)
+        id: download
+        run: |
+          set -euo pipefail
+          mkdir -p downloads
+          aria2c --conf-path=/tmp/aria2_silent.conf "${{ steps.enhance.outputs.enhanced_link }}" &
+          ARIA_PID=$!
+          echo "▶️ Aria2 PID: $ARIA_PID"
+
+          START_TIME=$(date +%s)
+          LAST_SIZE=0
+          STALL_COUNT=0
+          MAX_STALL=10          # 10 attempts of 60s each = 10 min stall tolerance
+          MAX_WAIT=6600         # 110 minutes (job timeout is 120 min)
+
+          while kill -0 $ARIA_PID 2>/dev/null; do
+            sleep 60
+            ELAPSED=$(( $(date +%s) - START_TIME ))
+            CURRENT_SIZE=$(du -sb downloads 2>/dev/null | cut -f1 || echo 0)
+
+            if [ "$CURRENT_SIZE" -gt "$LAST_SIZE" ]; then
+              STALL_COUNT=0
+              echo "   📦 ${ELAPSED}s - Downloaded $(($CURRENT_SIZE / 1048576)) MB so far"
+            else
+              STALL_COUNT=$((STALL_COUNT + 1))
+              echo "   ⚠️ No progress (stall count $STALL_COUNT)"
+            fi
+            LAST_SIZE=$CURRENT_SIZE
+
+            if [ "$STALL_COUNT" -ge "$MAX_STALL" ]; then
+              echo "❌ Download stalled for too long, stopping..."
+              kill $ARIA_PID 2>/dev/null || true
+              break
+            fi
+            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+              echo "⏰ Reached maximum download time (110 min)"
+              kill $ARIA_PID 2>/dev/null || true
+              break
+            fi
+          done
+
+          wait $ARIA_PID 2>/dev/null || true
+          ARIA_EXIT=$?
+          echo "🏁 Aria2 exit code: $ARIA_EXIT"
+
+          FILE_COUNT=$(find downloads -type f 2>/dev/null | wc -l)
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "❌ No files downloaded"
+            exit 1
+          fi
+
+          TOTAL_SIZE=$(du -sh downloads | cut -f1)
+          echo "✅ Download complete: $FILE_COUNT files, $TOTAL_SIZE"
+
+      - name: 📦 Package & Split (like YouTube workflow)
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p deliver
+
+          # Zip everything with max compression
+          ZIP_FILE="torrent_content.zip"
+          cd downloads
+          zip -r9 "../deliver/$ZIP_FILE" . >/dev/null 2>&1
+          cd ..
+          rm -rf downloads   # free disk space
+
+          ZIP_SIZE=$(stat -c%s "deliver/$ZIP_FILE")
+          ZIP_SIZE_MB=$((ZIP_SIZE / 1048576))
+          echo "📦 Zip size: ${ZIP_SIZE_MB} MB"
+
+          THRESHOLD_MB=${{ github.event.inputs.split_threshold_mb }}
+          HARD_LIMIT_MB=90
+
+          # Normalize threshold
+          if [[ "$THRESHOLD_MB" =~ ^[0-9]+$ ]]; then
+            true
+          else
+            echo "❌ Invalid split threshold, defaulting to 0 (never split)"
+            THRESHOLD_MB=0
+          fi
+
+          # Apply splitting only if needed
+          if [[ $THRESHOLD_MB -gt 0 && $ZIP_SIZE_MB -gt $THRESHOLD_MB ]] || [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB ]]; then
+            SPLIT=$THRESHOLD_MB
+            if [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB ]]; then
+              SPLIT=$HARD_LIMIT_MB
+              echo "🛡️ Forcing split at 90 MB hard limit"
+            fi
+            cd deliver
+            zip -r -s "${SPLIT}m" "${ZIP_FILE}" "${ZIP_FILE}" >/dev/null 2>&1
+            rm -f "$ZIP_FILE"  # remove unsplit zip (we keep the parts)
+            cd ..
+            echo "✂️ Split into parts of ${SPLIT} MB"
+          else
+            echo "📁 No split needed"
+          fi
+
+          echo "📂 Final delivery contents:"
+          ls -lh deliver/
+
+      - name: 🚀 Force-Push to Orphan 'torrent-downloads' Branch
+        run: |
+          set -euo pipefail
+          BRANCH="torrent-downloads"
+          REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          ORPHAN_DIR=$(mktemp -d)
+          cp -a deliver/* "$ORPHAN_DIR/"
+
+          cd "$ORPHAN_DIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$REPO_URL"
+          git add .
+          git commit -m "chore: torrent download [skip ci]" || {
+            echo "ℹ️ Nothing to commit"
+            exit 0
+          }
+
+          for attempt in 1 2 3; do
+            echo "🚀 Force-push attempt $attempt to $BRANCH..."
+            if git push origin "HEAD:$BRANCH" --force; then
+              echo "✅ Push succeeded"
+              exit 0
+            fi
+            echo "⚠️ Push failed, waiting 15s..."
+            sleep 15
+          done
+          echo "❌ Push failed after 3 attempts"
+          exit 1
+
+      - name: 📤 Upload Artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: torrent-download-${{ github.run_id }}
+          path: deliver/*
+          retention-days: 90
+
+      - name: ☁️ Upload to Gofile (optional)
+        if: ${{ github.event.inputs.upload_to_gofile == 'true' }}
+        run: |
+          set -euo pipefail
+          FILE=$(ls deliver/* 2>/dev/null | head -1)
+          if [ -z "$FILE" ]; then
+            echo "⚠️ No file to upload"
+            exit 0
+          fi
+          echo "🌐 Getting gofile server..."
+          SERVER=$(curl -s https://api.gofile.io/getServer | jq -r '.data.server')
+          echo "📤 Uploading to $SERVER..."
+          RESPONSE=$(curl -s -F "file=@$FILE" "https://${SERVER}.gofile.io/uploadFile")
+          if echo "$RESPONSE" | jq -e '.status == "ok"' >/dev/null; then
+            DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
+            echo "✅ Gofile link: $DOWNLOAD_PAGE"
+            echo "gofile_link=$DOWNLOAD_PAGE" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Gofile upload failed:"
+            echo "$RESPONSE"
+          fi
+
+      - name: 📋 Summary
+        run: |
+          echo "📦 Torrent download delivered to branch 'torrent-downloads'"
+          echo "🌐 Permanent zip: https://github.com/${{ github.repository }}/archive/refs/heads/torrent-downloads.zip"
+          echo "📋 Artifact available in this run's 'Artifacts' section (90 days)"
+          if [[ -n "${{ steps.upload_gofile.outputs.gofile_link }}" ]]; then
+            echo "☁️ Gofile link: ${{ steps.upload_gofile.outputs.gofile_link }}"
+          fi
