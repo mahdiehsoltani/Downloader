@@ -1,4 +1,4 @@
-name: 🔎 Search Academic Torrents (RSS Dump)
+name: 🔎 Search Academic Torrents (RSS → Branch)
 
 on:
   workflow_dispatch:
@@ -19,24 +19,24 @@ on:
         default: true
 
 jobs:
-  search:
+  search-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write          # required for force‑push
     steps:
       - name: 📥 Download Academic Torrents RSS dump
         run: |
           set -euxo pipefail
-          # This is the known URL for the full database dump in XML/RSS format.
-          # If it changes, find the new URL at: https://academictorrents.com/docs/api.html
           DB_URL="https://academictorrents.com/database.xml"
-          echo "🌐 Downloading database dump (this may be 5-15 MB) ..."
+          echo "🌐 Downloading database dump..."
           curl -sS --max-time 60 -o database.xml "$DB_URL"
           FILE_SIZE=$(stat -c%s database.xml 2>/dev/null || echo 0)
           echo "📦 Downloaded $(($FILE_SIZE / 1048576)) MB"
           head -c 200 database.xml
           echo ""
 
-      - name: 🔎 Search & build magnet links
+      - name: 🔎 Search & build results
         run: |
           python3 << 'PYEOF'
           import sys, os, xml.etree.ElementTree as ET
@@ -52,53 +52,82 @@ jobs:
               print(f"❌ Failed to parse XML: {e}")
               sys.exit(1)
 
-          # The RSS structure is <rss><channel><item>...
           items = root.findall(".//item")
           print(f"📊 Total torrents in dump: {len(items)}")
 
           results = []
           for item in items:
               title_el = item.find("title")
-              desc_el = item.find("description")
-              hash_el = item.find("infohash")  # or possibly <info_hash>, adjust if needed
+              hash_el = item.find("infohash")
               if title_el is None or hash_el is None:
                   continue
               title = title_el.text or ""
-              description = desc_el.text if desc_el is not None else ""
               infohash = hash_el.text.strip() if hash_el.text else ""
+              desc_el = item.find("description")
+              description = desc_el.text if desc_el is not None else ""
 
-              # Search logic
               text = title if name_only else f"{title} {description}"
               if query in text.lower():
                   magnet = f"magnet:?xt=urn:btih:{infohash}"
                   results.append((title, magnet))
-
               if len(results) >= limit:
                   break
 
           if not results:
-              print("⚠️ No matching torrents found.")
+              print("⚠️ No matches found.")
               sys.exit(0)
 
-          print(f"✅ Found {len(results)} matches (limit {limit})\n")
+          print(f"✅ Found {len(results)} matches\n")
           with open("results.txt", "w", encoding="utf-8") as f:
               for title, magnet in results:
                   line = f"📌 {title}\n   🔗 {magnet}\n---"
                   print(line)
                   f.write(line + "\n")
-          print("\n📄 results.txt saved")
           PYEOF
         env:
           QUERY: ${{ github.event.inputs.query }}
           LIMIT: ${{ github.event.inputs.limit }}
           MATCH_NAME_ONLY: ${{ github.event.inputs.match_name_only }}
 
-      - name: 📤 Upload results & raw dump (optional)
+      - name: 🚀 Force‑push results to orphan 'torrents' branch
+        run: |
+          set -euxo pipefail
+          BRANCH="torrents"
+          REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          # Prepare an empty directory for the orphan commit
+          ORPHAN_DIR=$(mktemp -d)
+          cp results.txt "$ORPHAN_DIR/"
+          cp database.xml "$ORPHAN_DIR/"   # optional – keep raw data for debugging
+
+          cd "$ORPHAN_DIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$REPO_URL"
+
+          git add .
+          git commit -m "chore: update torrent search results [skip ci]" || {
+            echo "ℹ️ Nothing to commit"
+            exit 0
+          }
+
+          for attempt in 1 2 3; do
+            echo "🚀 Force‑push attempt $attempt to $BRANCH branch..."
+            if git push origin "HEAD:$BRANCH" --force; then
+              echo "✅ Push succeeded"
+              exit 0
+            fi
+            echo "⚠️ Push failed, waiting 15 seconds..."
+            sleep 15
+          done
+          echo "❌ Push failed after 3 attempts"
+          exit 1
+
+      - name: 📤 Upload artifact (backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: torrent-search-results
-          path: |
-            results.txt
-            database.xml
+          path: results.txt
           retention-days: 7
