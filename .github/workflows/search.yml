@@ -1,4 +1,4 @@
-name: 🔎 Torrent Search (Fixed – Base64 Scripts)
+name: 🔎 Torrent Search (Fixed – URL Encoded)
 
 on:
   workflow_dispatch:
@@ -46,8 +46,6 @@ jobs:
           set -x
           mkdir -p results
           curl -v --max-time 60 -o database.xml "https://academictorrents.com/database.xml"
-          echo "Script decoding..."
-          # Base64-encoded Python script (generated from the original)
           echo "aW1wb3J0IHhtbC5ldHJlZS5FbGVtZW50VHJlZSBhcyBFVCwgT1MsIHN5cwpmcm9tIG9zIGltcG9ydCBlbnZpcm9uCgpxdWVyeSA9IGVudmlyb25bJ1FVRVJZJ10ubG93ZXIoKQpsaW1pdCA9IGludChlbnZpcm9uWydMSU1JVCddKQoKdHJlZSA9IEVULnBhcnNlKCdkYXRhYmFzZS54bWwnKQppdGVtcyA9IHRyZWUuZmluZGFsbCgiLi9pdGVtIikKCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIGloID0gKGkuZmluZHRleHQoJ2luZm9oYXNoJykgb3IgIiIpCiAgICAgICAgbWFnbmV0ID0gZiJtYWduZXQ6P3h0PXVybjpidGloOntpaH0iCiAgICAgICAgc2l6ZSA9IChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9IGJ5dGVzXG4gICDwn4yBICBTZWVkZXJzOiAodW5hdmFpbGFibGUpXG4tLS0iKQogICAgICAgIGNvdW50ICs9IDEKICAgICAgICBpZiBjb3VudCA+PSBsaW1pdDoKICAgICAgICAgICAgYnJlYWsKCmlmIG91dDoKICAgIHdpdGggb3BlbigicmVzdWx0cy9hY2FkZW1pYy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9hY2FkZW1pYy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiKG5vIHJlc3VsdHMpIik=" | base64 -d > /tmp/search_academic.py
           python3 /tmp/search_academic.py
           cat results/academic.txt >> results/final.txt
@@ -55,14 +53,17 @@ jobs:
           QUERY: ${{ github.event.inputs.query }}
           LIMIT: ${{ github.event.inputs.limit }}
 
-      - name: 🔍 BT4G search
+      - name: 🔍 BT4G search (URL-encoded query)
         if: ${{ github.event.inputs.source == 'BT4G (general, with seeders)' }}
         run: |
           set -x
           mkdir -p results
-          curl -v "https://bt4g.org/rss?q=${{ github.event.inputs.query }}&sort=seeders&order=desc" \
-            -H "User-Agent: Mozilla/5.0" -o results/bt4g.xml
-          echo "U0VTU0lPTiBpbXBvcnQgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVULCBPUywgc3lzCmZyb20gb3MgaW1wb3J0IGVudmlyb24KCnF1ZXJ5ID0gZW52aXJvblsnUVVFUlknXS5sb3dlcigpCmxpbWl0ID0gaW50KGVudmlyb25bJ0xJTUlUJ10pCm1pbl9zZWVkID0gaW50KGVudmlyb25bJ01JTl9TRUVEJ10pCgp0cnk6CiAgICB0cmVlID0gRVQucGFyc2UoInJlc3VsdHMvYnQ0Zy54bWwiKQpleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICBwcmludChmIuOAoiBGYWlsZWQgdG8gcGFyc2UgQlQ0RyBYTUw6IHtlfSIpCiAgICBzeXMuZXhpdCgwKQoKaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vaXRlbSIpCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBtYWduZXQgPSAoaS5maW5kdGV4dCgnbGluaycpIG9yICIiKSAgIyBCVDRHIHVzZXMgPGxpbms+IGZvciBtYWduZXQKICAgIHNlZWRfZWwgPSBpLmZpbmQoIm51bVNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRzIikKICAgIHNlZWRlcnMgPSBpbnQoc2VlZF9lbC50ZXh0KSBpZiBzZWVkX2VsIGlzIG5vdCBOb25lIGVsc2UgMAogICAgc2l6ZSA9IChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgIGNvbnRpbnVlCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9XG4gICDwn4yBICBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgY291bnQgKz0gMQogICAgICAgIGlmIGNvdW50ID49IGxpbWl0OgogICAgICAgICAgICBicmVhawppZiBvdXQ6CiAgICB3aXRoIG9wZW4oInJlc3VsdHMvYnQ0Zy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9idDRnLnR4dCIsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCIobm8gcmVzdWx0cykiKQ==" | base64 -d > /tmp/search_bt4g.py
+          # URL-encode the query
+          ENCODED_QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${{ github.event.inputs.query }}'))")
+          echo "Encoded query: $ENCODED_QUERY"
+          curl -v "https://bt4g.org/rss?q=${ENCODED_QUERY}&sort=seeders&order=desc" \
+            -H "User-Agent: Mozilla/5.0" -o results/bt4g.xml || { echo "Curl failed"; exit 1; }
+          echo "U0VTU0lPTiBpbXBvcnQgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVULCBPUywgc3lzCmZyb20gb3MgaW1wb3J0IGVudmlyb24KCnF1ZXJ5ID0gZW52aXJvblsnUVVFUlknXS5sb3dlcigpCmxpbWl0ID0gaW50KGVudmlyb25bJ0xJTUlUJ10pCm1pbl9zZWVkID0gaW50KGVudmlyb25bJ01JTl9TRUVEXSddKQoKdHJ5OgogICAgdHJlZSA9IEVULnBhcnNlKCJyZXN1bHRzL2J0NGcueG1sIikKZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgcHJpbnQoZiLjo6wgRmFpbGVkIHRvIHBhcnNlIEJUNEcKTUw6IHtlfSIpCiAgICBzeXMuZXhpdCgwKQoKaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vaXRlbSIpCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBtYWduZXQgPSAoaS5maW5kdGV4dCgnbGluaycpIG9yICIiKSAgIyBCVDRHIHVzZXMgPGxpbms+IGZvciBtYWduZXQKICAgIHNlZWRfZWwgPSBpLmZpbmQoIm51bVNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRzIikKICAgIHNlZWRlcnMgPSBpbnQoc2VlZF9lbC50ZXh0KSBpZiBzZWVkX2VsIGlzIG5vdCBOb25lIGVsc2UgMAogICAgc2l6ZSA9IChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgIGNvbnRpbnVlCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9XG4gICDwn4yBICBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgY291bnQgKz0gMQogICAgICAgIGlmIGNvdW50ID49IGxpbWl0OgogICAgICAgICAgICBicmVhawppZiBvdXQ6CiAgICB3aXRoIG9wZW4oInJlc3VsdHMvYnQ0Zy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9idDRnLnR4dCIsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCIobm8gcmVzdWx0cykiKQ==" | base64 -d > /tmp/search_bt4g.py
           python3 /tmp/search_bt4g.py
           cat results/bt4g.txt >> results/final.txt
         env:
@@ -70,13 +71,15 @@ jobs:
           LIMIT: ${{ github.event.inputs.limit }}
           MIN_SEED: ${{ github.event.inputs.min_seeders }}
 
-      - name: 🔍 Nyaa search
+      - name: 🔍 Nyaa search (URL-encoded query)
         if: ${{ github.event.inputs.source == 'Nyaa (anime, with seeders)' }}
         run: |
           set -x
           mkdir -p results
-          curl -v "https://nyaa.si/?page=rss&q=${{ github.event.inputs.query }}&c=1_0&f=0" \
-            -H "User-Agent: Mozilla/5.0" -o results/nyaa.xml
+          ENCODED_QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${{ github.event.inputs.query }}'))")
+          echo "Encoded query: $ENCODED_QUERY"
+          curl -v "https://nyaa.si/?page=rss&q=${ENCODED_QUERY}&c=1_0&f=0" \
+            -H "User-Agent: Mozilla/5.0" -o results/nyaa.xml || { echo "Curl failed"; exit 1; }
           echo "U0VTU0lPTiBpbXBvcnQgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVULCBPUywgc3lzCmZyb20gb3MgaW1wb3J0IGVudmlyb24KCnF1ZXJ5ID0gZW52aXJvblsnUVVFUlknXS5sb3dlcigpCmxpbWl0ID0gaW50KGVudmlyb25bJ0xJTUlUJ10pCm1pbl9zZWVkID0gaW50KGVudmlyb25bJ01JTl9TRUVEXSddKQpucyA9IHsnbnlhYSc6ICdodHRwczovL255YWEuc2kveG1sbnMvbnlhYSd9Cgp0cnk6CiAgICB0cmVlID0gRVQucGFyc2UoInJlc3VsdHMvbnlhYS54bWwiKQpleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICBwcmludChmIuOAoiBGYWlsZWQgdG8gcGFyc2UgTnlhYSBYTUw6IHtlfSIpCiAgICBzeXMuZXhpdCgwKQoKaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vaXRlbSIpCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBndWlkID0gKGkuZmluZHRleHQoJ2d1aWQnKSBvciAiIikKICAgIGlmICIvdmlldy8iIGluIGd1aWQ6CiAgICAgICAgaW5mb19oYXNoID0gZ3VpZC5yc3BsaXQoIi92aWV3LyIsIDEpWy0xXQogICAgZWxzZToKICAgICAgICBpbmZvX2hhc2ggPSBndWlkCiAgICBtYWduZXQgPSBmIm1hZ25ldDo/eHQ9dXJuOmJ0aWg6e2luZm9faGFzaH0iCiAgICBzZWVkX2VsID0gLmZpbmQoIm55YWE6c2VlZGVycyIsIG5zKQogICAgc2VlZGVycyA9IGludChzZWVkX2VsLnRleHQpIGlmIHNlZWRfZWwgaXMgbm90IE5vbmUgZWxzZSAwCiAgICBzaXplX2VsID0gaS5maW5kKCJueWFhOnNpemUiLCBucykKICAgIHNpemUgPSBzaXplX2VsLnRleHQgaWYgc2l6ZV9lbCBpcyBub3QgTm9uZSBlbHNlIChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgIGNvbnRpbnVlCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9XG4gICDwn4yBICBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgY291bnQgKz0gMQogICAgICAgIGlmIGNvdW50ID49IGxpbWl0OgogICAgICAgICAgICBicmVhawppZiBvdXQ6CiAgICB3aXRoIG9wZW4oInJlc3VsdHMvbnlhYS50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9ueWFhLnR4dCIsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCIobm8gcmVzdWx0cykiKQ==" | base64 -d > /tmp/search_nyaa.py
           python3 /tmp/search_nyaa.py
           cat results/nyaa.txt >> results/final.txt
@@ -90,7 +93,6 @@ jobs:
         run: |
           set -x
           mkdir -p results
-          # If a source didn't run, create empty placeholder
           [ -f results/academic.txt ] || echo "(no academic results)" > results/academic.txt
           [ -f results/bt4g.txt ] || echo "(no BT4G results)" > results/bt4g.txt
           [ -f results/nyaa.txt ] || echo "(no Nyaa results)" > results/nyaa.txt
@@ -103,7 +105,6 @@ jobs:
           echo "" >> results/final.txt
           echo "===== Nyaa =====" >> results/final.txt
           cat results/nyaa.txt >> results/final.txt
-
           cat results/final.txt
 
       - name: 🚀 Push to orphan 'torrents' branch
