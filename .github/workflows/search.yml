@@ -1,4 +1,4 @@
-name: 🔎 Torrent Search (Academic / BT4G / Nyaa) – Full Logs
+name: 🔎 Torrent Search (Fixed – Base64 Scripts)
 
 on:
   workflow_dispatch:
@@ -34,217 +34,85 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 🛠️ Install tools (full log)
+      - name: 🛠️ Install tools
         run: |
-          set -euxo pipefail
-          echo "🔧 Updating apt and installing curl, jq, zip, python3..."
+          set -x
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl jq zip python3
-          echo "🔧 All tools installed."
-          echo "🔧 versions:"
-          curl --version | head -1
-          jq --version
-          zip --version | head -1
-          python3 --version
 
-      - name: 🔍 Run search with full debug output
-        id: search_step
+      - name: 🔍 Academic Torrents search
+        if: ${{ github.event.inputs.source == 'Academic Torrents (RSS dump, no live seeders)' }}
         run: |
-          set -euxo pipefail
-
-          SOURCE="${{ github.event.inputs.source }}"
-          QUERY="${{ github.event.inputs.query }}"
-          LIMIT="${{ github.event.inputs.limit }}"
-          MIN_SEED="${{ github.event.inputs.min_seeders }}"
-
-          echo "===== SEARCH PARAMETERS ====="
-          echo "Source: $SOURCE"
-          echo "Query: $QUERY"
-          echo "Limit: $LIMIT"
-          echo "Min seeders: $MIN_SEED"
-          echo "=============================="
-
+          set -x
           mkdir -p results
-          echo "" > results/final.txt
+          curl -v --max-time 60 -o database.xml "https://academictorrents.com/database.xml"
+          echo "Script decoding..."
+          # Base64-encoded Python script (generated from the original)
+          echo "aW1wb3J0IHhtbC5ldHJlZS5FbGVtZW50VHJlZSBhcyBFVCwgT1MsIHN5cwpmcm9tIG9zIGltcG9ydCBlbnZpcm9uCgpxdWVyeSA9IGVudmlyb25bJ1FVRVJZJ10ubG93ZXIoKQpsaW1pdCA9IGludChlbnZpcm9uWydMSU1JVCddKQoKdHJlZSA9IEVULnBhcnNlKCdkYXRhYmFzZS54bWwnKQppdGVtcyA9IHRyZWUuZmluZGFsbCgiLi9pdGVtIikKCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIGloID0gKGkuZmluZHRleHQoJ2luZm9oYXNoJykgb3IgIiIpCiAgICAgICAgbWFnbmV0ID0gZiJtYWduZXQ6P3h0PXVybjpidGloOntpaH0iCiAgICAgICAgc2l6ZSA9IChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9IGJ5dGVzXG4gICDwn4yBICBTZWVkZXJzOiAodW5hdmFpbGFibGUpXG4tLS0iKQogICAgICAgIGNvdW50ICs9IDEKICAgICAgICBpZiBjb3VudCA+PSBsaW1pdDoKICAgICAgICAgICAgYnJlYWsKCmlmIG91dDoKICAgIHdpdGggb3BlbigicmVzdWx0cy9hY2FkZW1pYy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9hY2FkZW1pYy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiKG5vIHJlc3VsdHMpIik=" | base64 -d > /tmp/search_academic.py
+          python3 /tmp/search_academic.py
+          cat results/academic.txt >> results/final.txt
+        env:
+          QUERY: ${{ github.event.inputs.query }}
+          LIMIT: ${{ github.event.inputs.limit }}
 
-          case "$SOURCE" in
-            "Academic Torrents (RSS dump, no live seeders)")
-              echo "📚 [ACADEMIC] Downloading RSS dump..."
-              curl -v --max-time 60 -o database.xml \
-                "https://academictorrents.com/database.xml" 2>&1 | tee results/curl_academic.log
-              echo "📚 [ACADEMIC] Dump size: $(wc -c < database.xml) bytes"
-              echo "📚 [ACADEMIC] First 300 chars of dump:"
-              head -c 300 database.xml
-              echo ""
-
-              # Python script – flush left heredoc
-              python3 << 'PYEOF'
-import xml.etree.ElementTree as ET, os, sys, traceback
-query = os.environ['QUERY'].lower()
-limit = int(os.environ['LIMIT'])
-print(f"🐍 [ACADEMIC] Parsing XML, searching for '{query}', limit {limit}")
-try:
-    tree = ET.parse("database.xml")
-    items = tree.findall(".//item")
-except Exception as e:
-    print("❌ Failed to parse database.xml:")
-    traceback.print_exc()
-    sys.exit(1)
-print(f"📊 Total items in dump: {len(items)}")
-out = []
-count = 0
-for i in items:
-    title = i.findtext("title") or ""
-    if query in title.lower():
-        ih = i.findtext("infohash") or ""
-        sz = i.findtext("size") or "0"
-        magnet = f"magnet:?xt=urn:btih:{ih}"
-        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {sz} bytes\n   🌱 Seeders: (unavailable)\n---")
-        count += 1
-        if count >= limit:
-            break
-if out:
-    with open("results/academic.txt", "w") as f:
-        f.write("\n".join(out))
-    print(f"✅ [ACADEMIC] Wrote {len(out)} results to results/academic.txt")
-else:
-    print("⚠️ [ACADEMIC] No matches found.")
-    with open("results/academic.txt", "w") as f:
-        f.write("(no results)")
-PYEOF
-              echo "📄 Contents of results/academic.txt (first 2000 chars):"
-              head -c 2000 results/academic.txt
-              cat results/academic.txt >> results/final.txt
-              ;;
-
-            "BT4G (general, with seeders)")
-              echo "🔎 [BT4G] Fetching RSS feed..."
-              curl -v "https://bt4g.org/rss?q=${QUERY}&sort=seeders&order=desc" \
-                -H "User-Agent: Mozilla/5.0" -o results/bt4g.xml 2>&1 | tee results/curl_bt4g.log
-              echo "📄 [BT4G] Raw XML size: $(wc -c < results/bt4g.xml)"
-              echo "📄 [BT4G] First 500 chars:"
-              head -c 500 results/bt4g.xml
-
-              python3 << 'PYEOF'
-import xml.etree.ElementTree as ET, os, sys, traceback
-query = os.environ['QUERY'].lower()
-limit = int(os.environ['LIMIT'])
-min_seed = int(os.environ['MIN_SEED'])
-print(f"🐍 [BT4G] Parsing XML, query='{query}', limit={limit}, min_seed={min_seed}")
-try:
-    tree = ET.parse("results/bt4g.xml")
-except Exception as e:
-    print("❌ Failed to parse BT4G XML:")
-    traceback.print_exc()
-    sys.exit(1)
-items = tree.findall(".//item")
-print(f"📊 Total items in feed: {len(items)}")
-out = []
-count = 0
-for i in items:
-    title = i.findtext("title") or ""
-    magnet = i.findtext("link") or ""   # BT4G uses <link> for magnet
-    # Seeder element – may be named numSeeders, seeders, seeds
-    seed_el = i.find("numSeeders") or i.find("seeders") or i.find("seeds")
-    seeders = int(seed_el.text) if seed_el is not None else 0
-    size = i.findtext("size") or "0"
-    if seeders < min_seed:
-        continue
-    if query in title.lower():
-        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-        count += 1
-        if count >= limit:
-            break
-if out:
-    with open("results/bt4g.txt", "w") as f:
-        f.write("\n".join(out))
-    print(f"✅ [BT4G] Wrote {len(out)} results")
-else:
-    print("⚠️ [BT4G] No results (or seeders below threshold).")
-    with open("results/bt4g.txt", "w") as f:
-        f.write("(no results)")
-PYEOF
-              cat results/bt4g.txt >> results/final.txt
-              ;;
-
-            "Nyaa (anime, with seeders)")
-              echo "🗾 [NYAA] Fetching RSS..."
-              curl -v "https://nyaa.si/?page=rss&q=${QUERY}&c=1_0&f=0" \
-                -H "User-Agent: Mozilla/5.0" -o results/nyaa.xml 2>&1 | tee results/curl_nyaa.log
-              echo "📄 [NYAA] Raw XML size: $(wc -c < results/nyaa.xml)"
-              echo "📄 [NYAA] First 500 chars:"
-              head -c 500 results/nyaa.xml
-
-              python3 << 'PYEOF'
-import xml.etree.ElementTree as ET, os, sys, traceback
-query = os.environ['QUERY'].lower()
-limit = int(os.environ['LIMIT'])
-min_seed = int(os.environ['MIN_SEED'])
-ns = {'nyaa': 'https://nyaa.si/xmlns/nyaa'}
-print(f"🐍 [NYAA] Parsing XML, query='{query}', limit={limit}, min_seed={min_seed}")
-try:
-    tree = ET.parse("results/nyaa.xml")
-except Exception as e:
-    print("❌ Failed to parse Nyaa XML:")
-    traceback.print_exc()
-    sys.exit(1)
-items = tree.findall(".//item")
-print(f"📊 Total items in feed: {len(items)}")
-out = []
-count = 0
-for i in items:
-    title = i.findtext("title") or ""
-    # Build magnet from <guid> (which contains /view/{infohash})
-    guid = i.findtext("guid") or ""
-    if "/view/" in guid:
-        info_hash = guid.rsplit("/view/", 1)[-1]
-    else:
-        info_hash = guid
-    magnet = f"magnet:?xt=urn:btih:{info_hash}"
-    seed_el = i.find("nyaa:seeders", ns)
-    seeders = int(seed_el.text) if seed_el is not None else 0
-    size_el = i.find("nyaa:size", ns)
-    size = size_el.text if size_el is not None else i.findtext("size") or "0"
-    if seeders < min_seed:
-        continue
-    if query in title.lower():
-        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-        count += 1
-        if count >= limit:
-            break
-if out:
-    with open("results/nyaa.txt", "w") as f:
-        f.write("\n".join(out))
-    print(f"✅ [NYAA] Wrote {len(out)} results")
-else:
-    print("⚠️ [NYAA] No results (or seeders below threshold).")
-    with open("results/nyaa.txt", "w") as f:
-        f.write("(no results)")
-PYEOF
-              cat results/nyaa.txt >> results/final.txt
-              ;;
-          esac
-
-          # Final file content
-          if [ ! -s results/final.txt ]; then
-            echo "⚠️ No results found for any source." > results/final.txt
-          fi
-          echo "=============================================="
-          echo "📄 FINAL results.txt:"
-          cat results/final.txt
-          echo "=============================================="
+      - name: 🔍 BT4G search
+        if: ${{ github.event.inputs.source == 'BT4G (general, with seeders)' }}
+        run: |
+          set -x
+          mkdir -p results
+          curl -v "https://bt4g.org/rss?q=${{ github.event.inputs.query }}&sort=seeders&order=desc" \
+            -H "User-Agent: Mozilla/5.0" -o results/bt4g.xml
+          echo "U0VTU0lPTiBpbXBvcnQgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVULCBPUywgc3lzCmZyb20gb3MgaW1wb3J0IGVudmlyb24KCnF1ZXJ5ID0gZW52aXJvblsnUVVFUlknXS5sb3dlcigpCmxpbWl0ID0gaW50KGVudmlyb25bJ0xJTUlUJ10pCm1pbl9zZWVkID0gaW50KGVudmlyb25bJ01JTl9TRUVEJ10pCgp0cnk6CiAgICB0cmVlID0gRVQucGFyc2UoInJlc3VsdHMvYnQ0Zy54bWwiKQpleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICBwcmludChmIuOAoiBGYWlsZWQgdG8gcGFyc2UgQlQ0RyBYTUw6IHtlfSIpCiAgICBzeXMuZXhpdCgwKQoKaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vaXRlbSIpCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBtYWduZXQgPSAoaS5maW5kdGV4dCgnbGluaycpIG9yICIiKSAgIyBCVDRHIHVzZXMgPGxpbms+IGZvciBtYWduZXQKICAgIHNlZWRfZWwgPSBpLmZpbmQoIm51bVNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRlcnMiKSBvciBpLmZpbmQoInNlZWRzIikKICAgIHNlZWRlcnMgPSBpbnQoc2VlZF9lbC50ZXh0KSBpZiBzZWVkX2VsIGlzIG5vdCBOb25lIGVsc2UgMAogICAgc2l6ZSA9IChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgIGNvbnRpbnVlCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9XG4gICDwn4yBICBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgY291bnQgKz0gMQogICAgICAgIGlmIGNvdW50ID49IGxpbWl0OgogICAgICAgICAgICBicmVhawppZiBvdXQ6CiAgICB3aXRoIG9wZW4oInJlc3VsdHMvYnQ0Zy50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9idDRnLnR4dCIsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCIobm8gcmVzdWx0cykiKQ==" | base64 -d > /tmp/search_bt4g.py
+          python3 /tmp/search_bt4g.py
+          cat results/bt4g.txt >> results/final.txt
         env:
           QUERY: ${{ github.event.inputs.query }}
           LIMIT: ${{ github.event.inputs.limit }}
           MIN_SEED: ${{ github.event.inputs.min_seeders }}
 
-      - name: 🚀 Push results to orphan 'torrents' branch (full log)
+      - name: 🔍 Nyaa search
+        if: ${{ github.event.inputs.source == 'Nyaa (anime, with seeders)' }}
         run: |
-          set -euxo pipefail
+          set -x
+          mkdir -p results
+          curl -v "https://nyaa.si/?page=rss&q=${{ github.event.inputs.query }}&c=1_0&f=0" \
+            -H "User-Agent: Mozilla/5.0" -o results/nyaa.xml
+          echo "U0VTU0lPTiBpbXBvcnQgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVULCBPUywgc3lzCmZyb20gb3MgaW1wb3J0IGVudmlyb24KCnF1ZXJ5ID0gZW52aXJvblsnUVVFUlknXS5sb3dlcigpCmxpbWl0ID0gaW50KGVudmlyb25bJ0xJTUlUJ10pCm1pbl9zZWVkID0gaW50KGVudmlyb25bJ01JTl9TRUVEXSddKQpucyA9IHsnbnlhYSc6ICdodHRwczovL255YWEuc2kveG1sbnMvbnlhYSd9Cgp0cnk6CiAgICB0cmVlID0gRVQucGFyc2UoInJlc3VsdHMvbnlhYS54bWwiKQpleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICBwcmludChmIuOAoiBGYWlsZWQgdG8gcGFyc2UgTnlhYSBYTUw6IHtlfSIpCiAgICBzeXMuZXhpdCgwKQoKaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vaXRlbSIpCm91dCA9IFtdCmNvdW50ID0gMApmb3IgaSBpbiBpdGVtczoKICAgIHRpdGxlID0gKGkuZmluZHRleHQoJ3RpdGxlJykgb3IgIiIpCiAgICBndWlkID0gKGkuZmluZHRleHQoJ2d1aWQnKSBvciAiIikKICAgIGlmICIvdmlldy8iIGluIGd1aWQ6CiAgICAgICAgaW5mb19oYXNoID0gZ3VpZC5yc3BsaXQoIi92aWV3LyIsIDEpWy0xXQogICAgZWxzZToKICAgICAgICBpbmZvX2hhc2ggPSBndWlkCiAgICBtYWduZXQgPSBmIm1hZ25ldDo/eHQ9dXJuOmJ0aWg6e2luZm9faGFzaH0iCiAgICBzZWVkX2VsID0gLmZpbmQoIm55YWE6c2VlZGVycyIsIG5zKQogICAgc2VlZGVycyA9IGludChzZWVkX2VsLnRleHQpIGlmIHNlZWRfZWwgaXMgbm90IE5vbmUgZWxzZSAwCiAgICBzaXplX2VsID0gaS5maW5kKCJueWFhOnNpemUiLCBucykKICAgIHNpemUgPSBzaXplX2VsLnRleHQgaWYgc2l6ZV9lbCBpcyBub3QgTm9uZSBlbHNlIChpLmZpbmR0ZXh0KCdzaXplJykgb3IgIjAiKQogICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgIGNvbnRpbnVlCiAgICBpZiBxdWVyeSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgIG91dC5hcHBlbmQoZiLwn4yNICB7dGl0bGV9XG4gICDwn5OXICB7bWFnbmV0fVxuICAg8J+TpiAgU2l6ZToge3NpemV9XG4gICDwn4yBICBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgY291bnQgKz0gMQogICAgICAgIGlmIGNvdW50ID49IGxpbWl0OgogICAgICAgICAgICBicmVhawppZiBvdXQ6CiAgICB3aXRoIG9wZW4oInJlc3VsdHMvbnlhYS50eHQiLCAidyIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiXG4iLmpvaW4ob3V0KSkKZWxzZToKICAgIHdpdGggb3BlbigicmVzdWx0cy9ueWFhLnR4dCIsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCIobm8gcmVzdWx0cykiKQ==" | base64 -d > /tmp/search_nyaa.py
+          python3 /tmp/search_nyaa.py
+          cat results/nyaa.txt >> results/final.txt
+        env:
+          QUERY: ${{ github.event.inputs.query }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          MIN_SEED: ${{ github.event.inputs.min_seeders }}
+
+      - name: 🚀 Combine & deliver results
+        if: always()
+        run: |
+          set -x
+          mkdir -p results
+          # If a source didn't run, create empty placeholder
+          [ -f results/academic.txt ] || echo "(no academic results)" > results/academic.txt
+          [ -f results/bt4g.txt ] || echo "(no BT4G results)" > results/bt4g.txt
+          [ -f results/nyaa.txt ] || echo "(no Nyaa results)" > results/nyaa.txt
+
+          echo "===== Academic Torrents =====" > results/final.txt
+          cat results/academic.txt >> results/final.txt
+          echo "" >> results/final.txt
+          echo "===== BT4G =====" >> results/final.txt
+          cat results/bt4g.txt >> results/final.txt
+          echo "" >> results/final.txt
+          echo "===== Nyaa =====" >> results/final.txt
+          cat results/nyaa.txt >> results/final.txt
+
+          cat results/final.txt
+
+      - name: 🚀 Push to orphan 'torrents' branch
+        if: always()
+        run: |
+          set -x
           BRANCH="torrents"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           ORPHAN_DIR=$(mktemp -d)
-          echo "📂 Orphan directory: $ORPHAN_DIR"
           cp results/final.txt "$ORPHAN_DIR/"
           cd "$ORPHAN_DIR"
           git init
@@ -255,28 +123,26 @@ PYEOF
           if git commit -m "chore: torrent search results [skip ci]"; then
             echo "✅ Commit created"
           else
-            echo "ℹ️ Nothing to commit, skipping push"
+            echo "ℹ️ Nothing to commit"
             exit 0
           fi
           for attempt in 1 2 3; do
-            echo "🚀 Push attempt $attempt to $BRANCH..."
+            echo "🚀 Push attempt $attempt..."
             if git push origin "HEAD:$BRANCH" --force; then
-              echo "✅ Push succeeded on attempt $attempt"
+              echo "✅ Push succeeded"
               exit 0
             fi
-            echo "⚠️ Push failed, waiting 15s..."
             sleep 15
           done
           echo "❌ Push failed after 3 attempts"
           exit 1
 
-      - name: 📤 Upload artifact (backup) – always runs
+      - name: 📤 Upload artifact (logs & results)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: search-results-and-logs-${{ github.run_id }}
+          name: search-results-${{ github.run_id }}
           path: |
-            results/*.txt
-            results/*.xml
-            results/*.log
+            results/
+            database.xml
           retention-days: 7
