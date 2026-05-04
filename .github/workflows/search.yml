@@ -1,4 +1,4 @@
-name: 🔎 Search Academic Torrents (Robust)
+name: 🔎 Search Academic Torrents (Full Debug)
 
 on:
   workflow_dispatch:
@@ -27,13 +27,47 @@ jobs:
   search:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔧 Install Python dependencies
-        run: pip install requests
-
-      - name: 🔎 Search & save raw + parsed results
+      - name: 🔧 Install Dependencies (with debug)
+        shell: bash
         run: |
+          set -euxo pipefail
+          echo "🛠️ System info:"
+          uname -a
+          python3 --version
+          pip3 --version || echo "pip3 not found, trying pip..."
+          
+          # Ubuntu 24.04 runners may require --break-system-packages
+          pip3 install requests --break-system-packages 2>&1 || \
+          pip3 install requests 2>&1 || \
+          python3 -m pip install requests 2>&1 || {
+            echo "❌ Failed to install requests"
+            exit 1
+          }
+          python3 -c "import requests; print('Requests version:', requests.__version__)"
+
+      - name: 🔎 Search & Capture Everything (Full Log)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "================== ENVIRONMENT =================="
+          echo "QUERY: '${{ github.event.inputs.query }}'"
+          echo "LIMIT: ${{ github.event.inputs.limit }}"
+          echo "SORT_BY: ${{ github.event.inputs.sort_by }}"
+          echo "HOME: $HOME"
+          echo "PWD: $PWD"
+          echo "================================================="
+
+          # Simple connectivity test
+          echo "🌐 Testing connectivity to api endpoint..."
+          curl -v --max-time 10 "https://academictorrents.com/apiv2/entries?search=test&limit=1" \
+               -H "User-Agent: Mozilla/5.0" 2>&1 | tee curl_verbose.log || {
+            echo "❌ Curl failed – network or DNS issue"
+            cat curl_verbose.log
+            exit 1
+          }
+
           python3 << 'PYEOF'
-          import requests, json, sys, os
+          import requests, json, sys, os, traceback, time
 
           QUERY = os.environ['QUERY']
           LIMIT = int(os.environ['LIMIT'])
@@ -48,32 +82,49 @@ jobs:
           }
           headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
-          print(f"🔍 Query: {QUERY}")
-          print(f"📊 Limit: {LIMIT}, Sort: {SORT}")
-          print(f"🌐 URL: {BASE}?search={QUERY}&limit={LIMIT}&sort={SORT}&order=desc\n")
+          print(f"🔍 Full request URL: {BASE}?search={QUERY}&limit={LIMIT}&sort={SORT}&order=desc")
+          print(f"🧩 Params: {params}")
+          print(f"📡 Headers: {headers}")
 
           try:
               r = requests.get(BASE, params=params, headers=headers, timeout=15)
+              print(f"📩 Status code: {r.status_code}")
+              print(f"📋 Response headers: {dict(r.headers)}")
+              # Save raw response even if not JSON
+              with open("raw_response.json", "w", encoding="utf-8") as f:
+                  f.write(r.text)
+              print(f"📄 Raw response saved (length {len(r.text)} chars)")
+              print("📄 First 500 chars of response:")
+              print(r.text[:500])
+
               r.raise_for_status()
           except Exception as e:
-              print(f"❌ Request failed: {e}")
+              print("❌ Request error:")
+              traceback.print_exc()
               sys.exit(1)
 
-          # Save raw response for debugging
-          with open("raw_response.json", "w", encoding="utf-8") as f:
-              f.write(r.text)
-
           data = r.json()
-          # Normalize: if it's a list, use it directly; else try 'torrents' key
-          torrents = data if isinstance(data, list) else data.get("torrents", [])
+          print(f"🔢 Type of JSON root: {type(data)}")
+          if isinstance(data, list):
+              torrents = data
+              print("ℹ️ Response is a list")
+          elif isinstance(data, dict):
+              torrents = data.get("torrents", [])
+              print(f"ℹ️ Response is dict with keys: {list(data.keys())}")
+              if "error" in data:
+                  print(f"⚠️ API returned error: {data['error']}")
+                  sys.exit(1)
+          else:
+              torrents = []
+              print(f"❌ Unexpected root type: {type(data)}")
 
           if not torrents:
-              print("⚠️ No results found. Raw response saved as artifact.")
+              print("⚠️ No torrents found in response. Exiting gracefully (not an error).")
               sys.exit(0)
 
           print(f"✅ Found {len(torrents)} torrent(s)\n")
           lines = []
-          for t in torrents:
+          for idx, t in enumerate(torrents):
               name = t.get("name", "Unknown")
               magnet = t.get("magnet", "N/A")
               size = t.get("size", "?")
@@ -100,14 +151,20 @@ jobs:
           LIMIT: ${{ github.event.inputs.limit }}
           SORT_BY: ${{ github.event.inputs.sort_by }}
 
-      - name: 📤 Upload raw JSON (for debugging)
+      - name: 📤 Upload debug artifacts (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-api-response
-          path: raw_response.json
-          retention-days: 3
+          name: full-debug-logs
+          path: |
+            raw_response.json
+            results.txt
+            curl_verbose.log
+          retention-days: 7
 
-      - name: 📤 Upload parsed results
+      - name: 📤 Upload parsed results (if exists)
+        id: upload_parsed
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: torrent-search-results
