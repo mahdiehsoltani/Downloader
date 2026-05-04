@@ -1,4 +1,4 @@
-name: 🔎 Search Academic Torrents
+name: 🔎 Search Academic Torrents (Robust)
 
 on:
   workflow_dispatch:
@@ -12,25 +12,102 @@ on:
         required: false
         type: number
         default: 10
+      sort_by:
+        description: '📈 Sort by'
+        required: false
+        type: choice
+        options:
+          - seeders
+          - relevance
+          - size
+          - date_added
+        default: 'seeders'
 
 jobs:
   search:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔎 Search & extract magnet links
+      - name: 🔧 Install Python dependencies
+        run: pip install requests
+
+      - name: 🔎 Search & save raw + parsed results
         run: |
-          curl -s "https://academictorrents.com/apiv2/entries?search=${{ github.event.inputs.query }}&limit=${{ github.event.inputs.limit }}" \
-            -H "User-Agent: Mozilla/5.0" \
-            | jq -r '
-                if type == "array" then .[] | 
-                "📌 \(.name)\n   🔗 Magnet: \(.magnet)\n   📦 Size: \(.size)\n   🌱 Seeders: \(.seeders)\n   🧲 Torrent file: \(.torrent_file)\n---"
-                else .torrents[]? | 
-                "📌 \(.name)\n   🔗 Magnet: \(.magnet)\n   📦 Size: \(.size)\n   🌱 Seeders: \(.seeders)\n   🧲 Torrent file: \(.torrent_file)\n---"
-                end' > results.txt
+          python3 << 'PYEOF'
+          import requests, json, sys, os
 
-          cat results.txt
+          QUERY = os.environ['QUERY']
+          LIMIT = int(os.environ['LIMIT'])
+          SORT = os.environ['SORT_BY']
 
-      - name: 📤 Upload results
+          BASE = "https://academictorrents.com/apiv2/entries"
+          params = {
+              "search": QUERY,
+              "limit": LIMIT,
+              "sort": SORT,
+              "order": "desc"
+          }
+          headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+          print(f"🔍 Query: {QUERY}")
+          print(f"📊 Limit: {LIMIT}, Sort: {SORT}")
+          print(f"🌐 URL: {BASE}?search={QUERY}&limit={LIMIT}&sort={SORT}&order=desc\n")
+
+          try:
+              r = requests.get(BASE, params=params, headers=headers, timeout=15)
+              r.raise_for_status()
+          except Exception as e:
+              print(f"❌ Request failed: {e}")
+              sys.exit(1)
+
+          # Save raw response for debugging
+          with open("raw_response.json", "w", encoding="utf-8") as f:
+              f.write(r.text)
+
+          data = r.json()
+          # Normalize: if it's a list, use it directly; else try 'torrents' key
+          torrents = data if isinstance(data, list) else data.get("torrents", [])
+
+          if not torrents:
+              print("⚠️ No results found. Raw response saved as artifact.")
+              sys.exit(0)
+
+          print(f"✅ Found {len(torrents)} torrent(s)\n")
+          lines = []
+          for t in torrents:
+              name = t.get("name", "Unknown")
+              magnet = t.get("magnet", "N/A")
+              size = t.get("size", "?")
+              seeders = t.get("seeders", 0)
+              torrent_file = t.get("torrent_file", "")
+              line = (
+                  f"📌 {name}\n"
+                  f"   🔗 Magnet: {magnet}\n"
+                  f"   📦 Size: {size}\n"
+                  f"   🌱 Seeders: {seeders}\n"
+                  f"   🧲 Torrent file: {torrent_file}\n"
+                  f"---"
+              )
+              print(line)
+              lines.append(line)
+
+          with open("results.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+
+          print("\n✅ Parsed results saved to results.txt")
+          PYEOF
+        env:
+          QUERY: ${{ github.event.inputs.query }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          SORT_BY: ${{ github.event.inputs.sort_by }}
+
+      - name: 📤 Upload raw JSON (for debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-api-response
+          path: raw_response.json
+          retention-days: 3
+
+      - name: 📤 Upload parsed results
         uses: actions/upload-artifact@v4
         with:
           name: torrent-search-results
