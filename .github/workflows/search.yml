@@ -1,0 +1,38 @@
+name: 🔎 Search Academic Torrents
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: '🔍 Search term'
+        required: true
+        type: string
+      limit:
+        description: '📊 Number of results'
+        required: false
+        type: number
+        default: 10
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔎 Search & extract magnet links
+        run: |
+          curl -s "https://academictorrents.com/apiv2/entries?search=${{ github.event.inputs.query }}&limit=${{ github.event.inputs.limit }}" \
+            -H "User-Agent: Mozilla/5.0" \
+            | jq -r '
+                if type == "array" then .[] | 
+                "📌 \(.name)\n   🔗 Magnet: \(.magnet)\n   📦 Size: \(.size)\n   🌱 Seeders: \(.seeders)\n   🧲 Torrent file: \(.torrent_file)\n---"
+                else .torrents[]? | 
+                "📌 \(.name)\n   🔗 Magnet: \(.magnet)\n   📦 Size: \(.size)\n   🌱 Seeders: \(.seeders)\n   🧲 Torrent file: \(.torrent_file)\n---"
+                end' > results.txt
+
+          cat results.txt
+
+      - name: 📤 Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: torrent-search-results
+          path: results.txt
+          retention-days: 7
