@@ -1,123 +1,104 @@
-name: 🔎 Search Academic Torrents (Fixed)
+name: 🔎 Search Academic Torrents (RSS Dump)
 
 on:
   workflow_dispatch:
     inputs:
       query:
-        description: '🔍 Search term'
+        description: '🔍 Search term (matches in title)'
         required: true
         type: string
       limit:
-        description: '📊 Number of results'
+        description: '📊 Max results to show'
         required: false
         type: number
-        default: 10
-      sort_by:
-        description: '📈 Sort by'
-        required: false
-        type: choice
-        options:
-          - seeders
-          - relevance
-          - size
-          - date_added
-        default: 'seeders'
-      include_internet_archive:
-        description: '📚 Also search Internet Archive?'
+        default: 20
+      match_name_only:
+        description: '📛 Match only torrent name (otherwise also description)'
         required: false
         type: boolean
-        default: false
+        default: true
 
 jobs:
   search:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: 🛠️ Install jq (already present)
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: 🔎 Search Academic Torrents
-        id: search_academic
+      - name: 📥 Download Academic Torrents RSS dump
         run: |
           set -euxo pipefail
-          echo "🌐 Query: '${{ github.event.inputs.query }}'"
-          RESPONSE=$(curl -sS --max-time 15 \
-            "https://academictorrents.com/apiv2/entries?search=${{ github.event.inputs.query }}&limit=${{ github.event.inputs.limit }}&sort=${{ github.event.inputs.sort_by }}&order=desc" \
-            -H "User-Agent: Mozilla/5.0")
-          echo "$RESPONSE" > raw_response_academic.json
-          echo "📄 Raw response saved (length: $(wc -c < raw_response_academic.json))"
-          head -c 500 raw_response_academic.json
+          # This is the known URL for the full database dump in XML/RSS format.
+          # If it changes, find the new URL at: https://academictorrents.com/docs/api.html
+          DB_URL="https://academictorrents.com/database.xml"
+          echo "🌐 Downloading database dump (this may be 5-15 MB) ..."
+          curl -sS --max-time 60 -o database.xml "$DB_URL"
+          FILE_SIZE=$(stat -c%s database.xml 2>/dev/null || echo 0)
+          echo "📦 Downloaded $(($FILE_SIZE / 1048576)) MB"
+          head -c 200 database.xml
           echo ""
 
-          # Normalise: try array, then object with .torrents
-          jq -r '
-            if type == "array" then .[]
-            else .torrents[]? end
-            | select(.name != null)
-            | "📌 \(.name)\n   🔗 Magnet: \(.magnet // "N/A")\n   📦 Size: \(.size // "?")\n   🌱 Seeders: \(.seeders // 0)\n---"
-          ' raw_response_academic.json > results_academic.txt
-
-          if [[ ! -s results_academic.txt ]]; then
-            echo "⚠️ No Academic Torrents results found."
-            echo "" > results_academic.txt
-          else
-            echo "✅ Found results:"
-            cat results_academic.txt
-          fi
-
-      - name: 📦 Internet Archive search (optional)
-        if: ${{ github.event.inputs.include_internet_archive == 'true' }}
+      - name: 🔎 Search & build magnet links
         run: |
-          set -euxo pipefail
-          echo "📚 Searching Internet Archive (most seeded items first)..."
-          # Archive advanced search API – returns JSON with .response.docs
-          QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${{ github.event.inputs.query }}'))")
-          IA_RESPONSE=$(curl -sS --max-time 20 \
-            "https://archive.org/advancedsearch.php?q=${QUERY}+AND+collection%3Aopensource&fl%5B%5D=identifier,title,downloads,date&sort%5B%5D=downloads+desc&rows=${{ github.event.inputs.limit }}&output=json")
-          echo "$IA_RESPONSE" > raw_response_archive.json
-          echo "📄 Archive raw response (length: $(wc -c < raw_response_archive.json))"
-          head -c 500 raw_response_archive.json
+          python3 << 'PYEOF'
+          import sys, os, xml.etree.ElementTree as ET
 
-          # Parse and create magnet-like torrent URLs
-          jq -r '
-            .response.docs[]? | 
-            "📌 " + .title + "\n   🧲 Torrent: https://archive.org/download/\(.identifier)/\(.identifier)_archive.torrent\n   📦 Identifier: \(.identifier)\n   🌱 Downloads (popularity): \(.downloads)\n---"
-          ' raw_response_archive.json > results_archive.txt
+          query = os.environ['QUERY'].lower()
+          limit = int(os.environ['LIMIT'])
+          name_only = os.environ['MATCH_NAME_ONLY'] == 'true'
 
-          if [[ ! -s results_archive.txt ]]; then
-            echo "⚠️ No Internet Archive results."
-            echo "" > results_archive.txt
-          else
-            cat results_archive.txt
-          fi
+          try:
+              tree = ET.parse("database.xml")
+              root = tree.getroot()
+          except Exception as e:
+              print(f"❌ Failed to parse XML: {e}")
+              sys.exit(1)
 
-      - name: 🧾 Combine results
-        run: |
-          echo "===== Academic Torrents =====" > combined_results.txt
-          cat results_academic.txt >> combined_results.txt || echo "(none)" >> combined_results.txt
-          echo "" >> combined_results.txt
-          if [[ -f results_archive.txt ]]; then
-            echo "===== Internet Archive =====" >> combined_results.txt
-            cat results_archive.txt >> combined_results.txt || echo "(none)" >> combined_results.txt
-          fi
-          cat combined_results.txt
+          # The RSS structure is <rss><channel><item>...
+          items = root.findall(".//item")
+          print(f"📊 Total torrents in dump: {len(items)}")
 
-      - name: 📤 Upload debug & results (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-debug-and-results
-          path: |
-            raw_response_academic.json
-            raw_response_archive.json
-            results_academic.txt
-            results_archive.txt
-            combined_results.txt
-          retention-days: 7
+          results = []
+          for item in items:
+              title_el = item.find("title")
+              desc_el = item.find("description")
+              hash_el = item.find("infohash")  # or possibly <info_hash>, adjust if needed
+              if title_el is None or hash_el is None:
+                  continue
+              title = title_el.text or ""
+              description = desc_el.text if desc_el is not None else ""
+              infohash = hash_el.text.strip() if hash_el.text else ""
 
-      - name: 📤 Upload final readable results
+              # Search logic
+              text = title if name_only else f"{title} {description}"
+              if query in text.lower():
+                  magnet = f"magnet:?xt=urn:btih:{infohash}"
+                  results.append((title, magnet))
+
+              if len(results) >= limit:
+                  break
+
+          if not results:
+              print("⚠️ No matching torrents found.")
+              sys.exit(0)
+
+          print(f"✅ Found {len(results)} matches (limit {limit})\n")
+          with open("results.txt", "w", encoding="utf-8") as f:
+              for title, magnet in results:
+                  line = f"📌 {title}\n   🔗 {magnet}\n---"
+                  print(line)
+                  f.write(line + "\n")
+          print("\n📄 results.txt saved")
+          PYEOF
+        env:
+          QUERY: ${{ github.event.inputs.query }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          MATCH_NAME_ONLY: ${{ github.event.inputs.match_name_only }}
+
+      - name: 📤 Upload results & raw dump (optional)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: torrent-search-results
-          path: combined_results.txt
+          path: |
+            results.txt
+            database.xml
           retention-days: 7
