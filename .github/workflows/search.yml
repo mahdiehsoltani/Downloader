@@ -1,4 +1,4 @@
-name: 🔎 Torrent Search (Academic / BT4G / Nyaa)
+name: 🔎 Torrent Search (Fixed – Base64 Single Script)
 
 on:
   workflow_dispatch:
@@ -40,110 +40,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl jq zip python3
 
-      - name: 🔍 Run search
+      - name: 🔍 Download source & run search
         run: |
           set -x
           mkdir -p results
-
-          # Write the search script to a file using a literal YAML block
-          cat > /tmp/search_torrent.py << 'PYEOF'
-import xml.etree.ElementTree as ET
-import os, sys, urllib.parse
-
-source = os.environ['SOURCE']
-query = os.environ['QUERY'].lower()
-limit = int(os.environ['LIMIT'])
-min_seed = int(os.environ['MIN_SEED'])
-
-def build_magnet(infohash):
-    return f"magnet:?xt=urn:btih:{infohash}"
-
-def search_academic():
-    import subprocess
-    # download the dump if not present (it won't be because the file is in the workspace)
-    # We'll assume database.xml is already downloaded (we'll do that in the step)
-    tree = ET.parse("database.xml")
-    items = tree.findall(".//item")
-    out = []
-    for i in items:
-        title = (i.findtext("title") or "").lower()
-        if query in title:
-            ih = i.findtext("infohash") or ""
-            magnet = build_magnet(ih)
-            size = i.findtext("size") or "0"
-            out.append(f"📌 {i.findtext('title')}\n   🔗 {magnet}\n   📦 Size: {size} bytes\n   🌱 Seeders: (unavailable)\n---")
-            if len(out) >= limit:
-                break
-    return out
-
-def search_bt4g():
-    # download happens in shell, file is results/bt4g.xml
-    tree = ET.parse("results/bt4g.xml")
-    items = tree.findall(".//item")
-    out = []
-    for i in items:
-        title = (i.findtext("title") or "").lower()
-        if query in title:
-            magnet = i.findtext("link") or ""
-            seed_el = i.find("numSeeders") or i.find("seeders") or i.find("seeds")
-            seeders = int(seed_el.text) if seed_el is not None else 0
-            if seeders < min_seed:
-                continue
-            size = i.findtext("size") or "0"
-            out.append(f"📌 {i.findtext('title')}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-            if len(out) >= limit:
-                break
-    return out
-
-def search_nyaa():
-    tree = ET.parse("results/nyaa.xml")
-    ns = {'nyaa': 'https://nyaa.si/xmlns/nyaa'}
-    items = tree.findall(".//item")
-    out = []
-    for i in items:
-        title = (i.findtext("title") or "").lower()
-        if query in title:
-            guid = i.findtext("guid") or ""
-            if "/view/" in guid:
-                info_hash = guid.rsplit("/view/", 1)[-1]
-            else:
-                info_hash = guid
-            magnet = build_magnet(info_hash)
-            seed_el = i.find("nyaa:seeders", ns)
-            seeders = int(seed_el.text) if seed_el is not None else 0
-            if seeders < min_seed:
-                continue
-            size_el = i.find("nyaa:size", ns)
-            size = size_el.text if size_el is not None else i.findtext("size") or "0"
-            out.append(f"📌 {i.findtext('title')}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-            if len(out) >= limit:
-                break
-    return out
-
-if source == "Academic Torrents (RSS dump, no live seeders)":
-    results = search_academic()
-    filename = "results/academic.txt"
-elif source == "BT4G (general, with seeders)":
-    results = search_bt4g()
-    filename = "results/bt4g.txt"
-elif source == "Nyaa (anime, with seeders)":
-    results = search_nyaa()
-    filename = "results/nyaa.txt"
-else:
-    results = []
-    filename = "results/unknown.txt"
-
-if results:
-    with open(filename, "w") as f:
-        f.write("\n".join(results))
-    print(f"✅ {len(results)} results written to {filename}")
-else:
-    with open(filename, "w") as f:
-        f.write("(no results)")
-    print(f"⚠️ No results for {source}")
-PYEOF
-
-          # Download the necessary files and run the script
           SOURCE="${{ github.event.inputs.source }}"
           ENCODED_QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${{ github.event.inputs.query }}'))")
 
@@ -161,9 +61,11 @@ PYEOF
               ;;
           esac
 
-          python3 /tmp/search_torrent.py
+          # Replace the next line with YOUR base64 string from search_torrent.b64
+          echo "aW1wb3J0IHhtbC5ldHJlZS5FbGVtZW50VHJlZSBhcyBFVAppbXBvcnQgb3MsIHN5cwoKc291cmNlID0gb3MuZW52aXJvblsnU09VUkNFJ10KcXVlcnkgPSBvcy5lbnZpcm9uWydRVUVSWSddLmxvd2VyKCkKbGltaXQgPSBpbnQob3MuZW52aXJvblsnTElNSVQnXSkKbWluX3NlZWQgPSBpbnQob3MuZW52aXJvblsnTUlOX1NFRUQnXSkKCmRlZiBidWlsZF9tYWduZXQoaW5mb2hhc2gpOgogICAgcmV0dXJuIGYibWFnbmV0Oj94dD11cm46YnRpaDp7aW5mb2hhc2h9IgoKZGVmIHNlYXJjaF9hY2FkZW1pYygpOgogICAgdHJlZSA9IEVULnBhcnNlKCJkYXRhYmFzZS54bWwiKQogICAgaXRlbXMgPSB0cmVlLmZpbmRhbGwoIi4vL2l0ZW0iKQogICAgb3V0ID0gW10KICAgIGZvciBpIGluIGl0ZW1zOgogICAgICAgIHRpdGxlID0gKGkuZmluZHRleHQoInRpdGxlIikgb3IgIiIpLmxvd2VyKCkKICAgICAgICBpZiBxdWVyeSBpbiB0aXRsZToKICAgICAgICAgICAgaWggPSBpLmZpbmR0ZXh0KCJpbmZvaGFzaCIpIG9yICIiCiAgICAgICAgICAgIG1hZ25ldCA9IGJ1aWxkX21hZ25ldChpaCkKICAgICAgICAgICAgc2l6ZSA9IGkuZmluZHRleHQoInNpemUiKSBvciAiMCIKICAgICAgICAgICAgb3V0LmFwcGVuZChmIvCfk4wge2kuZmluZHRleHQoJ3RpdGxlJyl9XG4gICDwn5SXIHttYWduZXR9XG4gICDwn5OmIFNpemU6IHtzaXplfSBieXRlc1xuICAg8J+MsSBTZWVkZXJzOiAodW5hdmFpbGFibGUpXG4tLS0iKQogICAgICAgICAgICBpZiBsZW4ob3V0KSA+PSBsaW1pdDoKICAgICAgICAgICAgICAgIGJyZWFrCiAgICByZXR1cm4gb3V0CgpkZWYgc2VhcmNoX2J0NGcoKToKICAgIHRyZWUgPSBFVC5wYXJzZSgicmVzdWx0cy9idDRnLnhtbCIpCiAgICBpdGVtcyA9IHRyZWUuZmluZGFsbCgiLi8vaXRlbSIpCiAgICBvdXQgPSBbXQogICAgZm9yIGkgaW4gaXRlbXM6CiAgICAgICAgdGl0bGUgPSAoaS5maW5kdGV4dCgidGl0bGUiKSBvciAiIikubG93ZXIoKQogICAgICAgIGlmIHF1ZXJ5IGluIHRpdGxlOgogICAgICAgICAgICBtYWduZXQgPSBpLmZpbmR0ZXh0KCJsaW5rIikgb3IgIiIKICAgICAgICAgICAgc2VlZF9lbCA9IGkuZmluZCgibnVtU2VlZGVycyIpIG9yIGkuZmluZCgic2VlZGVycyIpIG9yIGkuZmluZCgic2VlZHMiKQogICAgICAgICAgICBzZWVkZXJzID0gaW50KHNlZWRfZWwudGV4dCkgaWYgc2VlZF9lbCBpcyBub3QgTm9uZSBlbHNlIDAKICAgICAgICAgICAgaWYgc2VlZGVycyA8IG1pbl9zZWVkOgogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgc2l6ZSA9IGkuZmluZHRleHQoInNpemUiKSBvciAiMCIKICAgICAgICAgICAgb3V0LmFwcGVuZChmIvCfk4wge2kuZmluZHRleHQoJ3RpdGxlJyl9XG4gICDwn5SXIHttYWduZXR9XG4gICDwn5OmIFNpemU6IHtzaXplfVxuICAg8J+MsSBTZWVkZXJzOiB7c2VlZGVyc31cbi0tLSIpCiAgICAgICAgICAgIGlmIGxlbihvdXQpID49IGxpbWl0OgogICAgICAgICAgICAgICAgYnJlYWsKICAgIHJldHVybiBvdXQKCmRlZiBzZWFyY2hfbnlhYSgpOgogICAgdHJlZSA9IEVULnBhcnNlKCJyZXN1bHRzL255YWEueG1sIikKICAgIG5zID0geydueWFhJzogJ2h0dHBzOi8vbnlhYS5zaS94bWxucy9ueWFhJ30KICAgIGl0ZW1zID0gdHJlZS5maW5kYWxsKCIuLy9pdGVtIikKICAgIG91dCA9IFtdCiAgICBmb3IgaSBpbiBpdGVtczoKICAgICAgICB0aXRsZSA9IChpLmZpbmR0ZXh0KCJ0aXRsZSIpIG9yICIiKS5sb3dlcigpCiAgICAgICAgaWYgcXVlcnkgaW4gdGl0bGU6CiAgICAgICAgICAgIGd1aWQgPSBpLmZpbmR0ZXh0KCJndWlkIikgb3IgIiIKICAgICAgICAgICAgaWYgIi92aWV3LyIgaW4gZ3VpZDoKICAgICAgICAgICAgICAgIGluZm9faGFzaCA9IGd1aWQucnNwbGl0KCIvdmlldy8iLCAxKVstMV0KICAgICAgICAgICAgZWxzZToKICAgICAgICAgICAgICAgIGluZm9faGFzaCA9IGd1aWQKICAgICAgICAgICAgbWFnbmV0ID0gYnVpbGRfbWFnbmV0KGluZm9faGFzaCkKICAgICAgICAgICAgc2VlZF9lbCA9IGkuZmluZCgibnlhYTpzZWVkZXJzIiwgbnMpCiAgICAgICAgICAgIHNlZWRlcnMgPSBpbnQoc2VlZF9lbC50ZXh0KSBpZiBzZWVkX2VsIGlzIG5vdCBOb25lIGVsc2UgMAogICAgICAgICAgICBpZiBzZWVkZXJzIDwgbWluX3NlZWQ6CiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBzaXplX2VsID0gaS5maW5kKCJueWFhOnNpemUiLCBucykKICAgICAgICAgICAgc2l6ZSA9IHNpemVfZWwudGV4dCBpZiBzaXplX2VsIGlzIG5vdCBOb25lIGVsc2UgaS5maW5kdGV4dCgic2l6ZSIpIG9yICIwIgogICAgICAgICAgICBvdXQuYXBwZW5kKGYi8J+TjCB7aS5maW5kdGV4dCgndGl0bGUnKX1cbiAgIPCflJcge21hZ25ldH1cbiAgIPCfk6YgU2l6ZToge3NpemV9XG4gICDwn4yxIFNlZWRlcnM6IHtzZWVkZXJzfVxuLS0tIikKICAgICAgICAgICAgaWYgbGVuKG91dCkgPj0gbGltaXQ6CiAgICAgICAgICAgICAgICBicmVhawogICAgcmV0dXJuIG91dAoKaWYgc291cmNlID09ICJBY2FkZW1pYyBUb3JyZW50cyAoUlNTIGR1bXAsIG5vIGxpdmUgc2VlZGVycykiOgogICAgcmVzdWx0cyA9IHNlYXJjaF9hY2FkZW1pYygpCiAgICBmaWxlbmFtZSA9ICJyZXN1bHRzL2FjYWRlbWljLnR4dCIKZWxpZiBzb3VyY2UgPT0gIkJUNEcgKGdlbmVyYWwsIHdpdGggc2VlZGVycykiOgogICAgcmVzdWx0cyA9IHNlYXJjaF9idDRnKCkKICAgIGZpbGVuYW1lID0gInJlc3VsdHMvYnQ0Zy50eHQiCmVsaWYgc291cmNlID09ICJOeWFhIChhbmltZSwgd2l0aCBzZWVkZXJzKSI6CiAgICByZXN1bHRzID0gc2VhcmNoX255YWEoKQogICAgZmlsZW5hbWUgPSAicmVzdWx0cy9ueWFhLnR4dCIKZWxzZToKICAgIHJlc3VsdHMgPSBbXQogICAgZmlsZW5hbWUgPSAicmVzdWx0cy91bmtub3duLnR4dCIKCmlmIHJlc3VsdHM6CiAgICB3aXRoIG9wZW4oZmlsZW5hbWUsICJ3IikgYXMgZjoKICAgICAgICBmLndyaXRlKCJcbiIuam9pbihyZXN1bHRzKSkKICAgIHByaW50KGYi4pyFIHtsZW4ocmVzdWx0cyl9IHJlc3VsdHMgd3JpdHRlbiB0byB7ZmlsZW5hbWV9IikKZWxzZToKICAgIHdpdGggb3BlbihmaWxlbmFtZSwgInciKSBhcyBmOgogICAgICAgIGYud3JpdGUoIihubyByZXN1bHRzKSIpCiAgICBwcmludChmIuKaoO+4jyBObyByZXN1bHRzIGZvciB7c291cmNlfSIpCg==" | base64 -d > /tmp/search.py
+          python3 /tmp/search.py
 
-          # Build final.txt
+          # Combine results
           cat results/academic.txt results/bt4g.txt results/nyaa.txt 2>/dev/null > results/final.txt
           echo "📄 Final results:"
           cat results/final.txt
