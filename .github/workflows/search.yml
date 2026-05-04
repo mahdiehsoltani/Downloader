@@ -1,4 +1,4 @@
-name: 🔎 Search Academic Torrents (Full Debug)
+name: 🔎 Search Academic Torrents (Fixed)
 
 on:
   workflow_dispatch:
@@ -22,151 +22,102 @@ on:
           - size
           - date_added
         default: 'seeders'
+      include_internet_archive:
+        description: '📚 Also search Internet Archive?'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   search:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔧 Install Dependencies (with debug)
-        shell: bash
+      - name: 🛠️ Install jq (already present)
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: 🔎 Search Academic Torrents
+        id: search_academic
         run: |
           set -euxo pipefail
-          echo "🛠️ System info:"
-          uname -a
-          python3 --version
-          pip3 --version || echo "pip3 not found, trying pip..."
-          
-          # Ubuntu 24.04 runners may require --break-system-packages
-          pip3 install requests --break-system-packages 2>&1 || \
-          pip3 install requests 2>&1 || \
-          python3 -m pip install requests 2>&1 || {
-            echo "❌ Failed to install requests"
-            exit 1
-          }
-          python3 -c "import requests; print('Requests version:', requests.__version__)"
+          echo "🌐 Query: '${{ github.event.inputs.query }}'"
+          RESPONSE=$(curl -sS --max-time 15 \
+            "https://academictorrents.com/apiv2/entries?search=${{ github.event.inputs.query }}&limit=${{ github.event.inputs.limit }}&sort=${{ github.event.inputs.sort_by }}&order=desc" \
+            -H "User-Agent: Mozilla/5.0")
+          echo "$RESPONSE" > raw_response_academic.json
+          echo "📄 Raw response saved (length: $(wc -c < raw_response_academic.json))"
+          head -c 500 raw_response_academic.json
+          echo ""
 
-      - name: 🔎 Search & Capture Everything (Full Log)
-        shell: bash
+          # Normalise: try array, then object with .torrents
+          jq -r '
+            if type == "array" then .[]
+            else .torrents[]? end
+            | select(.name != null)
+            | "📌 \(.name)\n   🔗 Magnet: \(.magnet // "N/A")\n   📦 Size: \(.size // "?")\n   🌱 Seeders: \(.seeders // 0)\n---"
+          ' raw_response_academic.json > results_academic.txt
+
+          if [[ ! -s results_academic.txt ]]; then
+            echo "⚠️ No Academic Torrents results found."
+            echo "" > results_academic.txt
+          else
+            echo "✅ Found results:"
+            cat results_academic.txt
+          fi
+
+      - name: 📦 Internet Archive search (optional)
+        if: ${{ github.event.inputs.include_internet_archive == 'true' }}
         run: |
           set -euxo pipefail
-          echo "================== ENVIRONMENT =================="
-          echo "QUERY: '${{ github.event.inputs.query }}'"
-          echo "LIMIT: ${{ github.event.inputs.limit }}"
-          echo "SORT_BY: ${{ github.event.inputs.sort_by }}"
-          echo "HOME: $HOME"
-          echo "PWD: $PWD"
-          echo "================================================="
+          echo "📚 Searching Internet Archive (most seeded items first)..."
+          # Archive advanced search API – returns JSON with .response.docs
+          QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${{ github.event.inputs.query }}'))")
+          IA_RESPONSE=$(curl -sS --max-time 20 \
+            "https://archive.org/advancedsearch.php?q=${QUERY}+AND+collection%3Aopensource&fl%5B%5D=identifier,title,downloads,date&sort%5B%5D=downloads+desc&rows=${{ github.event.inputs.limit }}&output=json")
+          echo "$IA_RESPONSE" > raw_response_archive.json
+          echo "📄 Archive raw response (length: $(wc -c < raw_response_archive.json))"
+          head -c 500 raw_response_archive.json
 
-          # Simple connectivity test
-          echo "🌐 Testing connectivity to api endpoint..."
-          curl -v --max-time 10 "https://academictorrents.com/apiv2/entries?search=test&limit=1" \
-               -H "User-Agent: Mozilla/5.0" 2>&1 | tee curl_verbose.log || {
-            echo "❌ Curl failed – network or DNS issue"
-            cat curl_verbose.log
-            exit 1
-          }
+          # Parse and create magnet-like torrent URLs
+          jq -r '
+            .response.docs[]? | 
+            "📌 " + .title + "\n   🧲 Torrent: https://archive.org/download/\(.identifier)/\(.identifier)_archive.torrent\n   📦 Identifier: \(.identifier)\n   🌱 Downloads (popularity): \(.downloads)\n---"
+          ' raw_response_archive.json > results_archive.txt
 
-          python3 << 'PYEOF'
-          import requests, json, sys, os, traceback, time
+          if [[ ! -s results_archive.txt ]]; then
+            echo "⚠️ No Internet Archive results."
+            echo "" > results_archive.txt
+          else
+            cat results_archive.txt
+          fi
 
-          QUERY = os.environ['QUERY']
-          LIMIT = int(os.environ['LIMIT'])
-          SORT = os.environ['SORT_BY']
+      - name: 🧾 Combine results
+        run: |
+          echo "===== Academic Torrents =====" > combined_results.txt
+          cat results_academic.txt >> combined_results.txt || echo "(none)" >> combined_results.txt
+          echo "" >> combined_results.txt
+          if [[ -f results_archive.txt ]]; then
+            echo "===== Internet Archive =====" >> combined_results.txt
+            cat results_archive.txt >> combined_results.txt || echo "(none)" >> combined_results.txt
+          fi
+          cat combined_results.txt
 
-          BASE = "https://academictorrents.com/apiv2/entries"
-          params = {
-              "search": QUERY,
-              "limit": LIMIT,
-              "sort": SORT,
-              "order": "desc"
-          }
-          headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-
-          print(f"🔍 Full request URL: {BASE}?search={QUERY}&limit={LIMIT}&sort={SORT}&order=desc")
-          print(f"🧩 Params: {params}")
-          print(f"📡 Headers: {headers}")
-
-          try:
-              r = requests.get(BASE, params=params, headers=headers, timeout=15)
-              print(f"📩 Status code: {r.status_code}")
-              print(f"📋 Response headers: {dict(r.headers)}")
-              # Save raw response even if not JSON
-              with open("raw_response.json", "w", encoding="utf-8") as f:
-                  f.write(r.text)
-              print(f"📄 Raw response saved (length {len(r.text)} chars)")
-              print("📄 First 500 chars of response:")
-              print(r.text[:500])
-
-              r.raise_for_status()
-          except Exception as e:
-              print("❌ Request error:")
-              traceback.print_exc()
-              sys.exit(1)
-
-          data = r.json()
-          print(f"🔢 Type of JSON root: {type(data)}")
-          if isinstance(data, list):
-              torrents = data
-              print("ℹ️ Response is a list")
-          elif isinstance(data, dict):
-              torrents = data.get("torrents", [])
-              print(f"ℹ️ Response is dict with keys: {list(data.keys())}")
-              if "error" in data:
-                  print(f"⚠️ API returned error: {data['error']}")
-                  sys.exit(1)
-          else:
-              torrents = []
-              print(f"❌ Unexpected root type: {type(data)}")
-
-          if not torrents:
-              print("⚠️ No torrents found in response. Exiting gracefully (not an error).")
-              sys.exit(0)
-
-          print(f"✅ Found {len(torrents)} torrent(s)\n")
-          lines = []
-          for idx, t in enumerate(torrents):
-              name = t.get("name", "Unknown")
-              magnet = t.get("magnet", "N/A")
-              size = t.get("size", "?")
-              seeders = t.get("seeders", 0)
-              torrent_file = t.get("torrent_file", "")
-              line = (
-                  f"📌 {name}\n"
-                  f"   🔗 Magnet: {magnet}\n"
-                  f"   📦 Size: {size}\n"
-                  f"   🌱 Seeders: {seeders}\n"
-                  f"   🧲 Torrent file: {torrent_file}\n"
-                  f"---"
-              )
-              print(line)
-              lines.append(line)
-
-          with open("results.txt", "w", encoding="utf-8") as f:
-              f.write("\n".join(lines))
-
-          print("\n✅ Parsed results saved to results.txt")
-          PYEOF
-        env:
-          QUERY: ${{ github.event.inputs.query }}
-          LIMIT: ${{ github.event.inputs.limit }}
-          SORT_BY: ${{ github.event.inputs.sort_by }}
-
-      - name: 📤 Upload debug artifacts (always)
+      - name: 📤 Upload debug & results (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-debug-logs
+          name: full-debug-and-results
           path: |
-            raw_response.json
-            results.txt
-            curl_verbose.log
+            raw_response_academic.json
+            raw_response_archive.json
+            results_academic.txt
+            results_archive.txt
+            combined_results.txt
           retention-days: 7
 
-      - name: 📤 Upload parsed results (if exists)
-        id: upload_parsed
+      - name: 📤 Upload final readable results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: torrent-search-results
-          path: results.txt
+          path: combined_results.txt
           retention-days: 7
