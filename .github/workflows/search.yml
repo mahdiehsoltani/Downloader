@@ -1,4 +1,4 @@
-name: 🔎 Torrent Search (Academic / BT4G / Nyaa)
+name: 🔎 Torrent Search (Academic / BT4G / Nyaa) – Full Logs
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ on:
         type: number
         default: 20
       min_seeders:
-        description: '🌱 Min seeders (only for BT4G / Nyaa)'
+        description: '🌱 Min seeders (BT4G / Nyaa only)'
         required: false
         type: number
         default: 0
@@ -34,146 +34,217 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 🛠️ Install tools
-        run: sudo apt-get update && sudo apt-get install -y curl jq zip
-
-      - name: 🔍 Determine source & run search
+      - name: 🛠️ Install tools (full log)
         run: |
+          set -euxo pipefail
+          echo "🔧 Updating apt and installing curl, jq, zip, python3..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl jq zip python3
+          echo "🔧 All tools installed."
+          echo "🔧 versions:"
+          curl --version | head -1
+          jq --version
+          zip --version | head -1
+          python3 --version
+
+      - name: 🔍 Run search with full debug output
+        id: search_step
+        run: |
+          set -euxo pipefail
+
           SOURCE="${{ github.event.inputs.source }}"
           QUERY="${{ github.event.inputs.query }}"
           LIMIT="${{ github.event.inputs.limit }}"
           MIN_SEED="${{ github.event.inputs.min_seeders }}"
+
+          echo "===== SEARCH PARAMETERS ====="
+          echo "Source: $SOURCE"
+          echo "Query: $QUERY"
+          echo "Limit: $LIMIT"
+          echo "Min seeders: $MIN_SEED"
+          echo "=============================="
 
           mkdir -p results
           echo "" > results/final.txt
 
           case "$SOURCE" in
             "Academic Torrents (RSS dump, no live seeders)")
-              echo "📚 Searching Academic Torrents (RSS dump)..."
-              curl -sS --max-time 60 -o database.xml \
-                "https://academictorrents.com/database.xml"
+              echo "📚 [ACADEMIC] Downloading RSS dump..."
+              curl -v --max-time 60 -o database.xml \
+                "https://academictorrents.com/database.xml" 2>&1 | tee results/curl_academic.log
+              echo "📚 [ACADEMIC] Dump size: $(wc -c < database.xml) bytes"
+              echo "📚 [ACADEMIC] First 300 chars of dump:"
+              head -c 300 database.xml
+              echo ""
+
+              # Python script – flush left heredoc
               python3 << 'PYEOF'
-              import xml.etree.ElementTree as ET, os
-              query = os.environ['QUERY'].lower()
-              limit = int(os.environ['LIMIT'])
-              tree = ET.parse("database.xml")
-              items = tree.findall(".//item")
-              count = 0
-              out_lines = []
-              for i in items:
-                  t = (i.findtext("title") or "").lower()
-                  if query in t:
-                      ih = i.findtext("infohash") or ""
-                      title = i.findtext("title") or ""
-                      sz = i.findtext("size") or "0"
-                      magnet = f"magnet:?xt=urn:btih:{ih}"
-                      out_lines.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {sz} bytes\n   🌱 Seeders: (unavailable)\n---")
-                      count += 1
-                      if count >= limit: break
-              if out_lines:
-                  with open("results/academic.txt", "w") as f:
-                      f.write("\n".join(out_lines))
-                  print(f"✅ {len(out_lines)} results")
-              else:
-                  print("⚠️ No matches found")
-              PYEOF
+import xml.etree.ElementTree as ET, os, sys, traceback
+query = os.environ['QUERY'].lower()
+limit = int(os.environ['LIMIT'])
+print(f"🐍 [ACADEMIC] Parsing XML, searching for '{query}', limit {limit}")
+try:
+    tree = ET.parse("database.xml")
+    items = tree.findall(".//item")
+except Exception as e:
+    print("❌ Failed to parse database.xml:")
+    traceback.print_exc()
+    sys.exit(1)
+print(f"📊 Total items in dump: {len(items)}")
+out = []
+count = 0
+for i in items:
+    title = i.findtext("title") or ""
+    if query in title.lower():
+        ih = i.findtext("infohash") or ""
+        sz = i.findtext("size") or "0"
+        magnet = f"magnet:?xt=urn:btih:{ih}"
+        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {sz} bytes\n   🌱 Seeders: (unavailable)\n---")
+        count += 1
+        if count >= limit:
+            break
+if out:
+    with open("results/academic.txt", "w") as f:
+        f.write("\n".join(out))
+    print(f"✅ [ACADEMIC] Wrote {len(out)} results to results/academic.txt")
+else:
+    print("⚠️ [ACADEMIC] No matches found.")
+    with open("results/academic.txt", "w") as f:
+        f.write("(no results)")
+PYEOF
+              echo "📄 Contents of results/academic.txt (first 2000 chars):"
+              head -c 2000 results/academic.txt
               cat results/academic.txt >> results/final.txt
               ;;
 
             "BT4G (general, with seeders)")
-              echo "🔎 Searching BT4G..."
-              curl -sS "https://bt4g.org/rss?q=${QUERY}&sort=seeders&order=desc" \
-                -H "User-Agent: Mozilla/5.0" \
-                -o results/bt4g.xml
+              echo "🔎 [BT4G] Fetching RSS feed..."
+              curl -v "https://bt4g.org/rss?q=${QUERY}&sort=seeders&order=desc" \
+                -H "User-Agent: Mozilla/5.0" -o results/bt4g.xml 2>&1 | tee results/curl_bt4g.log
+              echo "📄 [BT4G] Raw XML size: $(wc -c < results/bt4g.xml)"
+              echo "📄 [BT4G] First 500 chars:"
+              head -c 500 results/bt4g.xml
+
               python3 << 'PYEOF'
-              import xml.etree.ElementTree as ET, os
-              query = os.environ['QUERY'].lower()
-              limit = int(os.environ['LIMIT'])
-              min_seed = int(os.environ['MIN_SEED'])
-              tree = ET.parse("results/bt4g.xml")
-              items = tree.findall(".//item")
-              count = 0
-              out = []
-              for i in items:
-                  title = i.findtext("title") or ""
-                  magnet = i.findtext("link") or ""  # BT4G RSS uses <link> for magnet
-                  seed_el = i.find("numSeeders") or i.find("seeders")
-                  seeders = int(seed_el.text) if seed_el is not None else 0
-                  size = i.findtext("size") or "0"
-                  if seeders < min_seed:
-                      continue
-                  if query in title.lower():
-                      out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-                      count += 1
-                      if count >= limit: break
-              if out:
-                  with open("results/bt4g.txt", "w") as f:
-                      f.write("\n".join(out))
-                  print(f"✅ {len(out)} results")
-              else:
-                  print("⚠️ No matches (or seeders below threshold)")
-              PYEOF
+import xml.etree.ElementTree as ET, os, sys, traceback
+query = os.environ['QUERY'].lower()
+limit = int(os.environ['LIMIT'])
+min_seed = int(os.environ['MIN_SEED'])
+print(f"🐍 [BT4G] Parsing XML, query='{query}', limit={limit}, min_seed={min_seed}")
+try:
+    tree = ET.parse("results/bt4g.xml")
+except Exception as e:
+    print("❌ Failed to parse BT4G XML:")
+    traceback.print_exc()
+    sys.exit(1)
+items = tree.findall(".//item")
+print(f"📊 Total items in feed: {len(items)}")
+out = []
+count = 0
+for i in items:
+    title = i.findtext("title") or ""
+    magnet = i.findtext("link") or ""   # BT4G uses <link> for magnet
+    # Seeder element – may be named numSeeders, seeders, seeds
+    seed_el = i.find("numSeeders") or i.find("seeders") or i.find("seeds")
+    seeders = int(seed_el.text) if seed_el is not None else 0
+    size = i.findtext("size") or "0"
+    if seeders < min_seed:
+        continue
+    if query in title.lower():
+        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
+        count += 1
+        if count >= limit:
+            break
+if out:
+    with open("results/bt4g.txt", "w") as f:
+        f.write("\n".join(out))
+    print(f"✅ [BT4G] Wrote {len(out)} results")
+else:
+    print("⚠️ [BT4G] No results (or seeders below threshold).")
+    with open("results/bt4g.txt", "w") as f:
+        f.write("(no results)")
+PYEOF
               cat results/bt4g.txt >> results/final.txt
               ;;
 
             "Nyaa (anime, with seeders)")
-              echo "🗾 Searching Nyaa..."
-              curl -sS "https://nyaa.si/?page=rss&q=${QUERY}&c=1_0&f=0" \
-                -H "User-Agent: Mozilla/5.0" \
-                -o results/nyaa.xml
+              echo "🗾 [NYAA] Fetching RSS..."
+              curl -v "https://nyaa.si/?page=rss&q=${QUERY}&c=1_0&f=0" \
+                -H "User-Agent: Mozilla/5.0" -o results/nyaa.xml 2>&1 | tee results/curl_nyaa.log
+              echo "📄 [NYAA] Raw XML size: $(wc -c < results/nyaa.xml)"
+              echo "📄 [NYAA] First 500 chars:"
+              head -c 500 results/nyaa.xml
+
               python3 << 'PYEOF'
-              import xml.etree.ElementTree as ET, os
-              query = os.environ['QUERY'].lower()
-              limit = int(os.environ['LIMIT'])
-              min_seed = int(os.environ['MIN_SEED'])
-              tree = ET.parse("results/nyaa.xml")
-              ns = {'nyaa': 'https://nyaa.si/xmlns/nyaa'}
-              items = tree.findall(".//item")
-              count = 0
-              out = []
-              for i in items:
-                  title = i.findtext("title") or ""
-                  magnet = i.findtext("link") or ""  # <link> is the torrent page, but magnet is often in <guid>; we'll extract from <link>
-                  # Actually Nyaa RSS puts the magnet in <link>? No, <link> is the HTML page. Magnet is sometimes in <guid>
-                  # We'll use the infohash and construct magnet ourselves
-                  ih = i.findtext("guid") or ""
-                  # Strip prefix if present
-                  if "/view/" in ih:
-                      ih = ih.split("/view/")[-1]
-                  magnet = f"magnet:?xt=urn:btih:{ih}"
-                  seed_el = i.find("nyaa:seeders", ns)
-                  seeders = int(seed_el.text) if seed_el is not None else 0
-                  size = i.findtext("nyaa:size") or "0"
-                  if seeders < min_seed:
-                      continue
-                  if query in title.lower():
-                      out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
-                      count += 1
-                      if count >= limit: break
-              if out:
-                  with open("results/nyaa.txt", "w") as f:
-                      f.write("\n".join(out))
-                  print(f"✅ {len(out)} results")
-              else:
-                  print("⚠️ No matches (or seeders below threshold)")
-              PYEOF
+import xml.etree.ElementTree as ET, os, sys, traceback
+query = os.environ['QUERY'].lower()
+limit = int(os.environ['LIMIT'])
+min_seed = int(os.environ['MIN_SEED'])
+ns = {'nyaa': 'https://nyaa.si/xmlns/nyaa'}
+print(f"🐍 [NYAA] Parsing XML, query='{query}', limit={limit}, min_seed={min_seed}")
+try:
+    tree = ET.parse("results/nyaa.xml")
+except Exception as e:
+    print("❌ Failed to parse Nyaa XML:")
+    traceback.print_exc()
+    sys.exit(1)
+items = tree.findall(".//item")
+print(f"📊 Total items in feed: {len(items)}")
+out = []
+count = 0
+for i in items:
+    title = i.findtext("title") or ""
+    # Build magnet from <guid> (which contains /view/{infohash})
+    guid = i.findtext("guid") or ""
+    if "/view/" in guid:
+        info_hash = guid.rsplit("/view/", 1)[-1]
+    else:
+        info_hash = guid
+    magnet = f"magnet:?xt=urn:btih:{info_hash}"
+    seed_el = i.find("nyaa:seeders", ns)
+    seeders = int(seed_el.text) if seed_el is not None else 0
+    size_el = i.find("nyaa:size", ns)
+    size = size_el.text if size_el is not None else i.findtext("size") or "0"
+    if seeders < min_seed:
+        continue
+    if query in title.lower():
+        out.append(f"📌 {title}\n   🔗 {magnet}\n   📦 Size: {size}\n   🌱 Seeders: {seeders}\n---")
+        count += 1
+        if count >= limit:
+            break
+if out:
+    with open("results/nyaa.txt", "w") as f:
+        f.write("\n".join(out))
+    print(f"✅ [NYAA] Wrote {len(out)} results")
+else:
+    print("⚠️ [NYAA] No results (or seeders below threshold).")
+    with open("results/nyaa.txt", "w") as f:
+        f.write("(no results)")
+PYEOF
               cat results/nyaa.txt >> results/final.txt
               ;;
           esac
 
+          # Final file content
           if [ ! -s results/final.txt ]; then
             echo "⚠️ No results found for any source." > results/final.txt
           fi
+          echo "=============================================="
+          echo "📄 FINAL results.txt:"
+          cat results/final.txt
+          echo "=============================================="
         env:
           QUERY: ${{ github.event.inputs.query }}
           LIMIT: ${{ github.event.inputs.limit }}
           MIN_SEED: ${{ github.event.inputs.min_seeders }}
 
-      - name: 🚀 Push results to orphan 'torrents' branch
+      - name: 🚀 Push results to orphan 'torrents' branch (full log)
         run: |
+          set -euxo pipefail
           BRANCH="torrents"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           ORPHAN_DIR=$(mktemp -d)
+          echo "📂 Orphan directory: $ORPHAN_DIR"
           cp results/final.txt "$ORPHAN_DIR/"
           cd "$ORPHAN_DIR"
           git init
@@ -181,19 +252,31 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add origin "$REPO_URL"
           git add .
-          git commit -m "chore: torrent search results [skip ci]" || { echo "ℹ️ Nothing to commit"; exit 0; }
+          if git commit -m "chore: torrent search results [skip ci]"; then
+            echo "✅ Commit created"
+          else
+            echo "ℹ️ Nothing to commit, skipping push"
+            exit 0
+          fi
           for attempt in 1 2 3; do
-            echo "🚀 Push attempt $attempt..."
-            if git push origin "HEAD:$BRANCH" --force; then echo "✅ Pushed"; exit 0; fi
+            echo "🚀 Push attempt $attempt to $BRANCH..."
+            if git push origin "HEAD:$BRANCH" --force; then
+              echo "✅ Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "⚠️ Push failed, waiting 15s..."
             sleep 15
           done
-          echo "❌ Push failed"
+          echo "❌ Push failed after 3 attempts"
           exit 1
 
-      - name: 📤 Upload artifact (backup)
+      - name: 📤 Upload artifact (backup) – always runs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: search-results-${{ github.run_id }}
-          path: results/final.txt
+          name: search-results-and-logs-${{ github.run_id }}
+          path: |
+            results/*.txt
+            results/*.xml
+            results/*.log
           retention-days: 7
