@@ -67,8 +67,8 @@ jobs:
           WebUI\LocalHostAuth=true
           WebUI\AuthSubnetWhitelist=127.0.0.1/32
           WebUI\AuthSubnetWhitelistEnabled=true
-          Download\SavePath=/home/runner/downloads
-          Download\TempPath=/home/runner/downloads/tmp
+          Downloads\SavePath=/home/runner/downloads
+          Downloads\TempPath=/home/runner/downloads/tmp
           Connection\PortRangeMin=6881
           Session\AddExtensionToIncompleteFiles=false
           Session\DisableAutoCheckDownloaded=false
@@ -155,6 +155,8 @@ jobs:
 
                   if state in ("uploading", "stalledUP", "pausedUP", "forcedUP") and amount_left == 0:
                       print("✅ Download complete!", flush=True)
+                      # Give qBittorrent a moment to finalise moves
+                      time.sleep(5)
                       break
 
                   if state in ("error", "missingFiles"):
@@ -189,13 +191,19 @@ jobs:
         id: package
         run: |
           set -euo pipefail
-          mkdir -p deliver
 
+          DL_DIR="/home/runner/downloads"
+          if [ ! -d "$DL_DIR" ] || [ -z "$(ls -A "$DL_DIR" 2>/dev/null)" ]; then
+            echo "❌ No downloaded files found in $DL_DIR"
+            exit 1
+          fi
+
+          mkdir -p deliver
           ZIP_FILE="torrent_content.zip"
-          cd /home/runner/downloads
-          zip -r9 "../../deliver/$ZIP_FILE" . >/dev/null 2>&1 || true
+          cd "$DL_DIR"
+          zip -r9 "../../deliver/$ZIP_FILE" . >/dev/null 2>&1
           cd -
-          rm -rf /home/runner/downloads
+          rm -rf "$DL_DIR"   # free disk space
 
           ZIP_SIZE=$(stat -c%s "deliver/$ZIP_FILE")
           ZIP_SIZE_MB=$((ZIP_SIZE / 1048576))
