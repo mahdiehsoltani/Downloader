@@ -22,7 +22,7 @@ jobs:
   download-and-deliver:
     name: 🚀 Torrent Download & Deliver (qBittorrent)
     runs-on: ubuntu-latest
-    timeout-minutes: 360          # maximum allowed (6 hours)
+    timeout-minutes: 360
     permissions:
       contents: write
 
@@ -79,7 +79,6 @@ jobs:
           QBT_PID=$!
           echo "QBT_PID=$QBT_PID" >> $GITHUB_ENV
 
-          # Wait for Web UI to be ready
           for i in {1..30}; do
             if curl -s http://127.0.0.1:8080/api/v2/app/version >/dev/null 2>&1; then
               echo "✅ qBittorrent Web UI ready"
@@ -88,7 +87,6 @@ jobs:
             sleep 2
           done
 
-          # Extract the temporary password from the log
           PASSWORD=$(grep -oP 'temporary password is provided for this session: \K\S+' /tmp/qbt.log || echo "")
           if [ -z "$PASSWORD" ]; then
             echo "❌ Could not find temporary password in qBittorrent log"
@@ -97,22 +95,34 @@ jobs:
           echo "🔑 Temporary password: $PASSWORD"
           echo "QBT_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
-      - name: 🧲 Add Torrent / Magnet
+      - name: 🧲 Add Torrent / Magnet (cookie auth)
         run: |
           TOKEN="http://127.0.0.1:8080/api/v2"
           TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
 
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -u "admin:$QBT_PASSWORD" \
+          COOKIE_JAR=$(mktemp)
+          LOGIN_RESP=$(curl -s -c "$COOKIE_JAR" -w "%{http_code}" \
+            -X POST "$TOKEN/auth/login" \
+            --data "username=admin" \
+            --data "password=$QBT_PASSWORD")
+
+          if [ "$LOGIN_RESP" != "200" ]; then
+            echo "❌ Login failed (HTTP $LOGIN_RESP)"
+            exit 1
+          fi
+          echo "✅ Logged in"
+
+          ADD_STATUS=$(curl -s -b "$COOKIE_JAR" -o /dev/null -w "%{http_code}" \
             -X POST "$TOKEN/torrents/add" \
             --data-urlencode "urls=$TORRENT_LINK" \
             --data "savepath=/home/runner/downloads")
 
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ Failed to add torrent (HTTP $STATUS)"
+          if [ "$ADD_STATUS" != "200" ]; then
+            echo "❌ Failed to add torrent (HTTP $ADD_STATUS)"
             exit 1
           fi
           echo "✅ Torrent added"
+          echo "COOKIE_JAR=$COOKIE_JAR" >> $GITHUB_ENV
         env:
           QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
 
@@ -121,13 +131,28 @@ jobs:
         shell: python3
         env:
           QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
+          COOKIE_JAR: ${{ env.COOKIE_JAR }}
         run: |
           import time, sys, requests, os
 
-          PASSWORD = os.environ.get('QBT_PASSWORD', '')
           API = "http://127.0.0.1:8080/api/v2"
-          AUTH = ('admin', PASSWORD)
-          TIMEOUT = 360*60 - 600    # stop a bit before job limit to allow cleanup
+          COOKIE_JAR = os.environ.get('COOKIE_JAR', '/tmp/qbt_cookie')
+
+          session = requests.Session()
+          try:
+              with open(COOKIE_JAR) as f:
+                  for line in f:
+                      if line.startswith('#') or not line.strip():
+                          continue
+                      parts = line.split('\t')
+                      if len(parts) >= 7:
+                          domain, _, path, _, _, name, value = parts[:7]
+                          session.cookies.set(name, value, domain=domain, path=path)
+          except FileNotFoundError:
+              print("❌ Cookie file not found")
+              sys.exit(1)
+
+          TIMEOUT = 360*60 - 600
           STALL_LIMIT = 10
           CHECK_INTERVAL = 60
 
@@ -139,13 +164,13 @@ jobs:
           while True:
               time.sleep(CHECK_INTERVAL)
               try:
-                  resp = requests.get(f"{API}/torrents/info", auth=AUTH, timeout=10)
+                  resp = session.get(f"{API}/torrents/info", timeout=10)
                   if resp.status_code != 200:
                       print(f"⚠️ API error {resp.status_code}")
                       continue
                   torrents = resp.json()
                   if not torrents:
-                      print("⚠️ No torrents found – may have been removed")
+                      print("⚠️ No torrents found")
                       sys.exit(1)
 
                   t = torrents[0]
@@ -166,18 +191,18 @@ jobs:
                   if amount_left == last_left:
                       stall_count += 1
                       if stall_count >= STALL_LIMIT:
-                          print(f"❌ Download stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} min")
+                          print(f"❌ Stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} min")
                           sys.exit(1)
                   else:
                       stall_count = 0
                       last_left = amount_left
 
                   if time.time() - start_time > TIMEOUT:
-                      print("⏰ Total time limit reached")
+                      print("⏰ Timeout")
                       sys.exit(1)
 
               except requests.ConnectionError:
-                  print("⚠️ Connection lost to qBittorrent")
+                  print("⚠️ Connection lost")
                   sys.exit(1)
 
       - name: 🛑 Stop qBittorrent
@@ -191,12 +216,11 @@ jobs:
           set -euo pipefail
           mkdir -p deliver
 
-          # Zip everything with max compression
           ZIP_FILE="torrent_content.zip"
           cd /home/runner/downloads
           zip -r9 "../../deliver/$ZIP_FILE" . >/dev/null 2>&1 || true
           cd -
-          rm -rf /home/runner/downloads   # free disk space
+          rm -rf /home/runner/downloads
 
           ZIP_SIZE=$(stat -c%s "deliver/$ZIP_FILE")
           ZIP_SIZE_MB=$((ZIP_SIZE / 1048576))
