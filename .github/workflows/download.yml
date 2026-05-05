@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       split_threshold_mb:
-        description: '📦 Split files larger than (MB) — 0 = never'
+        description: '📦 Split files larger than (MB) — 0 = never (max 90)'
         required: false
         type: number
         default: 90
@@ -126,7 +126,7 @@ jobs:
           print("✅ Torrent added")
 
           # monitor
-          TIMEOUT = 360*60 - 600
+          TIMEOUT = 360*60 - 600   # stop a bit before job limit
           STALL_LIMIT = 10
           CHECK_INTERVAL = 60
           start_time = time.time()
@@ -155,8 +155,7 @@ jobs:
 
                   if state in ("uploading", "stalledUP", "pausedUP", "forcedUP") and amount_left == 0:
                       print("✅ Download complete!", flush=True)
-                      # Give qBittorrent a moment to finalise moves
-                      time.sleep(5)
+                      time.sleep(5)   # give qBittorrent a moment to finalise moves
                       break
 
                   if state in ("error", "missingFiles"):
@@ -187,47 +186,54 @@ jobs:
         run: |
           kill ${{ steps.start_qbt.outputs.qbt_pid }} 2>/dev/null || true
 
-      - name: 📦 Package & Split
-        id: package
+      - name: 💽 Disk space check & prepare download folder
         run: |
           set -euo pipefail
-
           DL_DIR="/home/runner/downloads"
           if [ ! -d "$DL_DIR" ] || [ -z "$(ls -A "$DL_DIR" 2>/dev/null)" ]; then
             echo "❌ No downloaded files found in $DL_DIR"
             exit 1
           fi
 
-          mkdir -p deliver
-          ZIP_FILE="torrent_content.zip"
-          cd "$DL_DIR"
-          zip -r9 "../../deliver/$ZIP_FILE" . >/dev/null 2>&1
-          cd -
-          rm -rf "$DL_DIR"   # free disk space
+          # Total size of downloaded content in bytes
+          CONTENT_SIZE=$(du -sb "$DL_DIR" | cut -f1)
+          AVAILABLE_KB=$(df /home/runner | awk 'NR==2 {print $4}')
+          AVAILABLE_BYTES=$((AVAILABLE_KB * 1024))
+          # We need roughly 2x content size for zip + overhead
+          if [ "$AVAILABLE_BYTES" -lt $((CONTENT_SIZE * 2)) ]; then
+            echo "❌ Not enough free disk space. Content: $((CONTENT_SIZE/1048576)) MB, free: $((AVAILABLE_BYTES/1048576)) MB"
+            exit 1
+          fi
+          echo "✅ Disk space OK (content: $((CONTENT_SIZE/1048576)) MB, free: $((AVAILABLE_BYTES/1048576)) MB)"
 
-          ZIP_SIZE=$(stat -c%s "deliver/$ZIP_FILE")
-          ZIP_SIZE_MB=$((ZIP_SIZE / 1048576))
-          echo "📦 Zip size: ${ZIP_SIZE_MB} MB"
+      - name: 📦 Package directly into split zip
+        id: package
+        run: |
+          set -euo pipefail
+          DL_DIR="/home/runner/downloads"
+          DELIVER_DIR="./deliver"
+          mkdir -p "$DELIVER_DIR"
 
           THRESHOLD_MB=${{ github.event.inputs.split_threshold_mb }}
+          # Hard limit for git push is 90 MB
           HARD_LIMIT_MB=90
-
-          if [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB || ($THRESHOLD_MB -gt 0 && $ZIP_SIZE_MB -gt $THRESHOLD_MB) ]]; then
-              SPLIT=$HARD_LIMIT_MB
-              if [[ $THRESHOLD_MB -gt 0 && $THRESHOLD_MB -lt $HARD_LIMIT_MB ]]; then
-                  SPLIT=$THRESHOLD_MB
-              fi
-              cd deliver
-              zip -r -s "${SPLIT}m" "${ZIP_FILE}" "${ZIP_FILE}" >/dev/null 2>&1
-              rm -f "$ZIP_FILE"
-              cd ..
-              echo "✂️ Split into parts of ${SPLIT} MB"
+          if [ "$THRESHOLD_MB" -gt 0 ] 2>/dev/null && [ "$THRESHOLD_MB" -le "$HARD_LIMIT_MB" ]; then
+            SPLIT_MB=$THRESHOLD_MB
           else
-              echo "📁 No split needed"
+            SPLIT_MB=$HARD_LIMIT_MB
           fi
 
+          echo "✂️ Creating split zip with part size ${SPLIT_MB} MB"
+          cd "$DL_DIR"
+          # Create split zip directly – no huge intermediate file
+          zip -r -s "${SPLIT_MB}m" "${OLDPWD}/${DELIVER_DIR}/torrent_content.zip" . >/dev/null 2>&1
+          cd -
+
+          rm -rf "$DL_DIR"
+          echo "✅ Zipped and cleaned up"
+
           echo "📂 Final delivery contents:"
-          ls -lh deliver/
+          ls -lh "$DELIVER_DIR"
 
       - name: 🚀 Force-Push to Orphan 'torrent-downloads' Branch
         run: |
@@ -236,7 +242,7 @@ jobs:
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
           ORPHAN_DIR=$(mktemp -d)
-          cp -a deliver/* "$ORPHAN_DIR/"
+          cp -a ./deliver/* "$ORPHAN_DIR/"
 
           cd "$ORPHAN_DIR"
           git init
@@ -261,19 +267,11 @@ jobs:
           echo "❌ Push failed after 3 attempts"
           exit 1
 
-      - name: 📤 Upload Artifact (backup)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: torrent-download-${{ github.run_id }}
-          path: deliver/*
-          retention-days: 90
-
       - name: ☁️ Upload to Gofile (optional)
         if: ${{ github.event.inputs.upload_to_gofile == 'true' }}
         run: |
           set -euo pipefail
-          FILE=$(ls deliver/* 2>/dev/null | head -1)
+          FILE=$(ls ./deliver/* 2>/dev/null | head -1)
           if [ -z "$FILE" ]; then
             echo "⚠️ No file to upload"
             exit 0
@@ -295,7 +293,6 @@ jobs:
         run: |
           echo "📦 Torrent download delivered to branch 'torrent-downloads'"
           echo "🌐 Permanent zip: https://github.com/${{ github.repository }}/archive/refs/heads/torrent-downloads.zip"
-          echo "📋 Artifact available in this run's 'Artifacts' section (90 days)"
           if [[ -n "${{ steps.package.outputs.gofile_link }}" ]]; then
             echo "☁️ Gofile link: ${{ steps.package.outputs.gofile_link }}"
           fi
