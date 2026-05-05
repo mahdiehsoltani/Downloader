@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           git push origin --delete "torrent-downloads-tmp-${{ github.run_id }}" 2>/dev/null || true
 
-      - name: 💾 Restore cached pip packages
+      - name: 💾 Restore cached packages (pip & Python)
         uses: actions/cache@v4
         with:
           path: |
@@ -49,18 +49,28 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: 📦 Restore cached apt packages
+      - name: 📦 Restore cached apt packages (user‑owned)
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
+          path: ~/.apt-cache
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
           restore-keys: |
             apt-${{ runner.os }}-
 
-      - name: 🔧 Install System Dependencies (parallel, cached)
+      - name: 📋 Copy cached debs back to apt archives
+        run: |
+          if [ -d ~/.apt-cache ] && [ "$(ls -A ~/.apt-cache 2>/dev/null)" ]; then
+            echo "📋 Restoring apt cache..."
+            sudo cp ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            sudo chmod 644 /var/cache/apt/archives/*.deb
+            echo "✅ Apt cache restored"
+          else
+            echo "📋 No apt cache found – will download fresh packages"
+          fi
+
+      - name: 🔧 Install System Dependencies (parallel, cached debs)
         run: |
           set -euo pipefail
-          # apt in background
           (
             for i in 1 2 3; do
               echo "🔄 apt-get attempt $i..."
@@ -69,7 +79,6 @@ jobs:
           ) &
           APT_PID=$!
 
-          # pip in background
           (
             pip install --cache-dir ~/.cache/pip requests
           ) &
@@ -79,10 +88,16 @@ jobs:
           wait $PIP_PID
           echo "✅ Dependencies installed"
 
-      - name: 📦 Save apt cache (post-install)
+      - name: 💿 Save apt cache for future runs
+        run: |
+          mkdir -p ~/.apt-cache
+          sudo cp /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
+          echo "✅ Apt cache saved"
+
+      - name: 📦 Cache apt packages (user‑owned)
         uses: actions/cache/save@v4
         with:
-          path: /var/cache/apt/archives
+          path: ~/.apt-cache
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
 
       - name: ⏳ Restore previous download state (resume)
