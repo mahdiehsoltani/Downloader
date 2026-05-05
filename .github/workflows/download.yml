@@ -53,6 +53,7 @@ jobs:
         run: pip install requests
 
       - name: ⚙️ Start qBittorrent & capture temporary password
+        id: start_qbt
         run: |
           set -euo pipefail
           QBT_PROFILE="/tmp/qbt-profile"
@@ -77,7 +78,7 @@ jobs:
           echo "🟢 Starting qBittorrent..."
           qbittorrent-nox --profile="$QBT_PROFILE" --webui-port=8080 2>&1 > /tmp/qbt.log &
           QBT_PID=$!
-          echo "QBT_PID=$QBT_PID" >> $GITHUB_ENV
+          echo "qbt_pid=$QBT_PID" >> $GITHUB_OUTPUT
 
           for i in {1..30}; do
             if curl -s http://127.0.0.1:8080/api/v2/app/version >/dev/null 2>&1; then
@@ -92,78 +93,47 @@ jobs:
             echo "❌ Could not find temporary password in qBittorrent log"
             exit 1
           fi
-          echo "🔑 Temporary password: $PASSWORD"
-          echo "QBT_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          echo "::add-mask::$PASSWORD"
+          echo "qbt_password=$PASSWORD" >> $GITHUB_OUTPUT
 
-      - name: 🧲 Add Torrent / Magnet (cookie auth)
-        run: |
-          TOKEN="http://127.0.0.1:8080/api/v2"
-          TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
-
-          COOKIE_JAR=$(mktemp)
-          LOGIN_RESP=$(curl -s -o /dev/null -c "$COOKIE_JAR" -w "%{http_code}" \
-            -X POST "$TOKEN/auth/login" \
-            --data "username=admin" \
-            --data "password=$QBT_PASSWORD")
-
-          if [ "$LOGIN_RESP" != "200" ]; then
-            echo "❌ Login failed (HTTP $LOGIN_RESP)"
-            exit 1
-          fi
-          echo "✅ Logged in"
-
-          ADD_STATUS=$(curl -s -o /dev/null -b "$COOKIE_JAR" -w "%{http_code}" \
-            -X POST "$TOKEN/torrents/add" \
-            --data-urlencode "urls=$TORRENT_LINK" \
-            --data "savepath=/home/runner/downloads")
-
-          if [ "$ADD_STATUS" != "200" ]; then
-            echo "❌ Failed to add torrent (HTTP $ADD_STATUS)"
-            exit 1
-          fi
-          echo "✅ Torrent added"
-          echo "COOKIE_JAR=$COOKIE_JAR" >> $GITHUB_ENV
-        env:
-          QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
-
-      - name: ⏳ Monitor Download Progress
+      - name: 🧲 Add Torrent & Monitor Download (Python session)
         id: monitor
         shell: python
         env:
-          QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
-          COOKIE_JAR: ${{ env.COOKIE_JAR }}
-          PYTHONUNBUFFERED: 1                # <-- force unbuffered output
+          QBT_PID: ${{ steps.start_qbt.outputs.qbt_pid }}
+          QBT_PASSWORD: ${{ steps.start_qbt.outputs.qbt_password }}
+          PYTHONUNBUFFERED: 1
         run: |
           import time, sys, requests, os
 
+          PASSWORD = os.environ['QBT_PASSWORD']
+          MAGNET = '''${{ github.event.inputs.torrent_link }}'''
           API = "http://127.0.0.1:8080/api/v2"
-          COOKIE_JAR = os.environ.get('COOKIE_JAR', '/tmp/qbt_cookie')
 
           session = requests.Session()
-          try:
-              with open(COOKIE_JAR) as f:
-                  for line in f:
-                      if line.startswith('#') or not line.strip():
-                          continue
-                      parts = line.split('\t')
-                      if len(parts) >= 7:
-                          domain, _, path, _, _, name, value = parts[:7]
-                          session.cookies.set(name, value, domain=domain, path=path)
-          except FileNotFoundError:
-              print("❌ Cookie file not found")
+          # login
+          r = session.post(f"{API}/auth/login", data={"username": "admin", "password": PASSWORD})
+          if r.status_code != 200:
+              print("❌ Login failed", r.status_code)
               sys.exit(1)
+          print("✅ Logged in")
 
+          # add magnet
+          r = session.post(f"{API}/torrents/add", data={"urls": MAGNET, "savepath": "/home/runner/downloads"})
+          if r.status_code != 200:
+              print("❌ Failed to add torrent", r.status_code)
+              sys.exit(1)
+          print("✅ Torrent added")
+
+          # monitor
           TIMEOUT = 360*60 - 600
           STALL_LIMIT = 10
           CHECK_INTERVAL = 60
-
           start_time = time.time()
           last_left = -1
           stall_count = 0
 
-          print("⏳ Monitoring started – first check in 10s...", flush=True)
-          time.sleep(10)   # quicker initial feedback
-
+          print("⏳ Monitoring download...", flush=True)
           while True:
               try:
                   resp = session.get(f"{API}/torrents/info", timeout=10)
@@ -209,12 +179,11 @@ jobs:
                   sys.exit(1)
 
               time.sleep(CHECK_INTERVAL)
-        # end python
 
       - name: 🛑 Stop qBittorrent
         if: always()
         run: |
-          kill $QBT_PID 2>/dev/null || true
+          kill ${{ steps.start_qbt.outputs.qbt_pid }} 2>/dev/null || true
 
       - name: 📦 Package & Split
         id: package
