@@ -27,35 +27,63 @@ jobs:
       contents: write
 
     steps:
-      - name: 📂 Checkout Repository
+      - name: 📂 Checkout Repository (shallow)
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: main
+          fetch-depth: 1
 
       - name: 🧹 Cleanup stale temporary branches
         run: |
           set -euo pipefail
           git push origin --delete "torrent-downloads-tmp-${{ github.run_id }}" 2>/dev/null || true
 
-      - name: 🔧 Install System Dependencies (with retry)
-        run: |
-          set -euo pipefail
-          for i in 1 2 3; do
-            echo "🔄 apt-get attempt $i..."
-            sudo apt-get update && sudo apt-get install -y qbittorrent-nox curl jq zip python3-pip && break || sleep 10
-          done
-
       - name: 💾 Restore cached pip packages
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
+          path: |
+            ~/.cache/pip
+            /opt/hostedtoolcache/Python
           key: pip-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: 🐍 Install Python API library
-        run: pip install requests
+      - name: 📦 Restore cached apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-
+
+      - name: 🔧 Install System Dependencies (parallel, cached)
+        run: |
+          set -euo pipefail
+          # apt in background
+          (
+            for i in 1 2 3; do
+              echo "🔄 apt-get attempt $i..."
+              sudo apt-get update && sudo apt-get install -y qbittorrent-nox curl jq zip python3-pip && break || sleep 10
+            done
+          ) &
+          APT_PID=$!
+
+          # pip in background
+          (
+            pip install --cache-dir ~/.cache/pip requests
+          ) &
+          PIP_PID=$!
+
+          wait $APT_PID
+          wait $PIP_PID
+          echo "✅ Dependencies installed"
+
+      - name: 📦 Save apt cache (post-install)
+        uses: actions/cache/save@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
 
       - name: ⏳ Restore previous download state (resume)
         id: resume
