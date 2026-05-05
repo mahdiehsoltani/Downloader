@@ -28,7 +28,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
-
     steps:
       - name: 📂 Checkout Repository (shallow)
         uses: actions/checkout@v4
@@ -474,7 +473,7 @@ jobs:
           done
           echo "✅ Playlist rewritten with final branch URLs"
 
-      - name: 🎨 Generate Player HTML (video) – master playlist & download fix
+      - name: 🎨 Generate Player HTML (video) – fixed download function
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           REPO="${{ github.repository }}"
@@ -632,7 +631,6 @@ jobs:
               let text = await response.text();
 
               let mediaPlaylistUrl = PLAYLIST_URL;
-              // Check if this is a master playlist
               if (text.includes('#EXT-X-STREAM-INF')) {
                 console.log('Master playlist detected, extracting first variant');
                 const lines = text.split(/\r?\n/);
@@ -648,7 +646,6 @@ jobs:
                 }
                 if (!firstVariant) throw new Error('No variant stream found in master playlist');
                 console.log('First variant URL: ' + firstVariant);
-                // Resolve relative URL
                 if (firstVariant.startsWith('http')) {
                   mediaPlaylistUrl = firstVariant;
                 } else {
@@ -676,6 +673,7 @@ jobs:
               let initSegmentPushed = false;
               const transmuxer = new muxjs.mp4.Transmuxer();
               const chunks = [];
+
               transmuxer.on('data', (segment) => {
                 if (segment.type === 'video' || segment.type === 'audio') {
                   chunks.push(segment.data);
@@ -687,21 +685,19 @@ jobs:
                   chunks.push(segment.data);
                 }
               });
-              await new Promise((resolve, reject) => {
-                transmuxer.on('done', resolve);
-                transmuxer.on('error', reject);
-                (async () => {
-                  for (let i = 0; i < fullSegmentUrls.length; i++) {
-                    console.log('Downloading segment ' + (i+1) + '/' + fullSegmentUrls.length);
-                    const resp = await fetch(fullSegmentUrls[i]);
-                    const buffer = await resp.arrayBuffer();
-                    transmuxer.push(new Uint8Array(buffer));
-                    transmuxer.flush();
-                    downloadFill.style.width = ((i + 1) / fullSegmentUrls.length * 100) + '%';
-                  }
-                  transmuxer.endTimeline();
-                })();
-              });
+
+              // Download and process all segments sequentially
+              for (let i = 0; i < fullSegmentUrls.length; i++) {
+                console.log('Downloading segment ' + (i+1) + '/' + fullSegmentUrls.length);
+                const resp = await fetch(fullSegmentUrls[i]);
+                const buffer = await resp.arrayBuffer();
+                transmuxer.push(new Uint8Array(buffer));
+                transmuxer.flush();
+                downloadFill.style.width = ((i + 1) / fullSegmentUrls.length * 100) + '%';
+              }
+
+              transmuxer.endTimeline();
+
               console.log('Transmuxing complete');
               const blob = new Blob(chunks, { type: 'video/mp4' });
               const a = document.createElement('a');
