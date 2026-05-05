@@ -1,4 +1,4 @@
-name: 🧪 Test Torrent RSS Feeds
+name: 🧪 Test Torrent RSS Feeds (Full Debug)
 
 on:
   workflow_dispatch:   # manual trigger only
@@ -8,9 +8,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: 📡 Probe each feed & collect status
+      - name: 📡 Probe each feed & collect status (debug)
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p feed_tests
 
           # ──────────────────────────────────────────────
@@ -37,14 +37,21 @@ jobs:
 
           for url in "${URLS[@]}"; do
             # Safe filename for the detail file
-            safe_name=$(echo "$url" | tr -c 'a-zA-Z0-9._-' '_' | cut -c1-80)
+            safe_name="$(echo "$url" | tr -c 'a-zA-Z0-9._-' '_' | cut -c1-80)"
             detail_file="$DETAIL_DIR/${safe_name}.txt"
 
+            echo "──────────────────────────────────────"
+            echo "🌐 Testing: $url"
+
             # 1. Get HTTP status code
+            set +e
             http_code=$(curl -s -o /dev/null -w "%{http_code}" \
                         -L --max-time 15 \
                         -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
                         "$url" 2>/dev/null || echo "000")
+            set -e
+
+            echo "   HTTP status: $http_code"
 
             # 2. If 2xx, download the first 500 bytes of the body
             if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
@@ -56,14 +63,16 @@ jobs:
             else
               echo "❌ $url -> HTTP $http_code" | tee -a "$SUMMARY"
               # Still save a snippet if any content was returned (e.g., error page)
-              curl -s --max-time 10 -L "$url" | head -c 200 > "$detail_file" 2>/dev/null || true
+              curl -s --max-time 10 -L \
+                   -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+                   "$url" 2>/dev/null | head -c 200 > "$detail_file" || true
             fi
           done
 
           echo "" | tee -a "$SUMMARY"
           echo "Detailed first‑bytes dumps are in feed_tests/details/" | tee -a "$SUMMARY"
 
-      - name: 📤 Upload test results
+      - name: 📤 Upload test results (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
