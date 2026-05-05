@@ -439,7 +439,7 @@ jobs:
           done
           echo "✅ Playlist rewritten with final branch URLs"
 
-      - name: 🎨 Generate Player HTML (video) – light version with ArvanCloud CDN
+      - name: 🎨 Generate Player HTML (video) – fixes included
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           REPO="${{ github.repository }}"
@@ -550,15 +550,18 @@ jobs:
           }
 
           function playVideo() {
-            video.play();
+            video.play().catch(() => {});
             playOverlay.style.display = 'none';
             controls.classList.remove('hidden');
           }
 
           function togglePlay() {
-            if (video.paused) { video.play(); playBtn.textContent = '⏸'; }
+            if (video.paused) { video.play().catch(()=>{}); playBtn.textContent = '⏸'; }
             else { video.pause(); playBtn.textContent = '▶'; }
           }
+
+          // Click on the video to toggle play/pause
+          video.addEventListener('click', togglePlay);
 
           video.addEventListener('timeupdate', () => {
             const pct = (video.currentTime / video.duration) * 100;
@@ -592,13 +595,25 @@ jobs:
             try {
               const response = await fetch(PLAYLIST_URL);
               const text = await response.text();
-              const segmentUrls = text.split('\n').filter(l => l.endsWith('.ts')).map(l => l.trim());
+              // handle both Windows and Unix line endings, trim whitespace
+              const segmentUrls = text.split(/\r?\n/)
+                .map(l => l.trim())
+                .filter(l => l.endsWith('.ts'));
               if (!segmentUrls.length) throw new Error('No segments found');
 
+              let initSegmentPushed = false;
               const transmuxer = new muxjs.mp4.Transmuxer();
               const chunks = [];
               transmuxer.on('data', (segment) => {
-                chunks.push(segment.initSegment, segment.data);
+                if (segment.type === 'video' || segment.type === 'audio') {
+                  chunks.push(segment.data);
+                } else if (segment.type === 'combined') {
+                  if (!initSegmentPushed && segment.initSegment) {
+                    chunks.push(segment.initSegment);
+                    initSegmentPushed = true;
+                  }
+                  chunks.push(segment.data);
+                }
               });
               await new Promise((resolve, reject) => {
                 transmuxer.on('done', resolve);
