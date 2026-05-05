@@ -1,4 +1,4 @@
-name: 📥 Torrent Downloader
+name: 📥 Torrent Downloader (qBittorrent)
 
 on:
   workflow_dispatch:
@@ -20,9 +20,9 @@ on:
 
 jobs:
   download-and-deliver:
-    name: 🚀 Torrent Download & Deliver
+    name: 🚀 Torrent Download & Deliver (qBittorrent)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
 
@@ -38,168 +38,140 @@ jobs:
           set -euo pipefail
           for i in 1 2 3; do
             echo "🔄 apt-get attempt $i..."
-            sudo apt-get update && sudo apt-get install -y aria2 curl jq zip && break || sleep 10
+            sudo apt-get update && sudo apt-get install -y qbittorrent-nox curl jq zip python3-pip && break || sleep 10
           done
 
-      - name: ⚙️ Detect System Resources & Create Aria2 Config
+      - name: 🐍 Install Python API library
+        run: pip install requests
+
+      - name: ⚙️ Prepare qBittorrent configuration
         run: |
           set -euo pipefail
-          CPU_CORES=$(nproc)
-          MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-          MEM_GB=$((MEM_KB / 1024 / 1024))
+          QBT_PROFILE="/tmp/qbt-profile"
+          mkdir -p "$QBT_PROFILE/qBittorrent"
 
-          # Tune based on available memory (GitHub runner has ~7 GB)
-          if [ "$MEM_GB" -lt 2 ]; then
-            MAX_CONN=8; MAX_CONC=2; MAX_PER_SERVER=4; SPLIT_SIZE="1M"
-          elif [ "$MEM_GB" -lt 4 ]; then
-            MAX_CONN=16; MAX_CONC=3; MAX_PER_SERVER=8; SPLIT_SIZE="1M"
-          else
-            MAX_CONN=24; MAX_CONC=4; MAX_PER_SERVER=12; SPLIT_SIZE="1M"
-          fi
-
-          echo "⚡ System: ${CPU_CORES} cores, ${MEM_GB} GB RAM"
-          echo "⚡ Aria2: ${MAX_CONN} connections, ${SPLIT_SIZE} min-split-size"
-
-          cat > /tmp/aria2_silent.conf << EOF
-          # General
-          dir=./downloads
-          file-allocation=falloc
-          check-integrity=true
-          continue=true
-          always-resume=true
-          auto-save-interval=30
-          save-session-interval=30
-
-          # Connections
-          max-concurrent-downloads=${MAX_CONC}
-          max-connection-per-server=${MAX_PER_SERVER}
-          min-split-size=${SPLIT_SIZE}
-          split=${MAX_CONN}
-          max-tries=5
-          retry-wait=10
-          timeout=300
-          connect-timeout=60
-          lowest-speed-limit=1K
-          max-download-limit=0
-
-          # BitTorrent
-          bt-max-peers=100
-          bt-request-peer-speed-limit=50K
-          bt-min-crypto-level=arc4
-          bt-require-crypto=false
-          bt-max-open-files=100
-          bt-tracker-connect-timeout=60
-          bt-tracker-timeout=60
-          seed-time=0
-          max-upload-limit=1K
-          bt-stop-timeout=0
-          bt-hash-check-seed=true
-          bt-seed-unverified=true
-          bt-save-metadata=true
-          follow-torrent=mem
-          bt-enable-lpd=true
-          bt-tracker-interval=300
-
-          # Network
-          enable-http-keep-alive=true
-          enable-http-pipelining=true
-          piece-length=1M
-
-          # CRITICAL: Silent logging for CI/CD
-          show-console-readout=false
-          summary-interval=300
-          log-level=error
-          console-log-level=error
-          quiet=true
+          # Create config that allows localhost without password
+          cat > "$QBT_PROFILE/qBittorrent/qBittorrent.conf" << 'EOF'
+          [Preferences]
+          WebUI\Address=*
+          WebUI\Port=8080
+          WebUI\UseUPnP=false
+          WebUI\LocalHostAuth=true
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          Download\SavePath=/home/runner/downloads
+          Download\TempPath=/home/runner/downloads/tmp
+          Connection\PortRangeMin=6881
+          Session\AddExtensionToIncompleteFiles=false
+          Session\DisableAutoCheckDownloaded=false
+          Session\Preallocation=true
           EOF
 
-      - name: 🧲 Enhance Magnet Link with Extra Trackers
-        id: enhance
-        run: |
-          set -euo pipefail
-          TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
+          # Start headless qbittorrent
+          echo "🟢 Starting qBittorrent..."
+          qbittorrent-nox --profile="$QBT_PROFILE" --webui-port=8080 &
+          QBT_PID=$!
+          echo "QBT_PID=$QBT_PID" >> $GITHUB_ENV
 
-          # If it's already a magnet link, append extra trackers
-          if [[ "$TORRENT_LINK" == magnet:* ]]; then
-            TRACKERS=(
-              "https://tracker.opentrackr.org:1337/announce"
-              "http://tracker.openbittorrent.com:80/announce"
-              "https://tracker.files.fm:6969/announce"
-              "https://tracker.moeking.me:6969/announce"
-              "https://tracker.dler.org:6969/announce"
-              "udp://tracker.opentrackr.org:1337/announce"
-              "udp://tracker.openbittorrent.com:6969/announce"
-              "udp://tracker.moeking.me:6969/announce"
-              "udp://tracker.dler.org:6969/announce"
-              "udp://tracker.torrent.eu.org:451/announce"
-              "http://tracker.bt4g.com:2095/announce"
-            )
-            ENHANCED="$TORRENT_LINK"
-            for tr in "${TRACKERS[@]}"; do
-              ENHANCED="${ENHANCED}&tr=${tr}"
-            done
-            echo "enhanced_link=$ENHANCED" >> $GITHUB_OUTPUT
-            echo "🔗 Enhanced magnet link with ${#TRACKERS[@]} trackers"
-          else
-            echo "enhanced_link=$TORRENT_LINK" >> $GITHUB_OUTPUT
-            echo "🔗 Using direct URL: $TORRENT_LINK"
-          fi
-
-      - name: ⬇️ Download via Aria2 (with progress monitoring)
-        id: download
-        run: |
-          set -euo pipefail
-          mkdir -p downloads
-          aria2c --conf-path=/tmp/aria2_silent.conf "${{ steps.enhance.outputs.enhanced_link }}" &
-          ARIA_PID=$!
-          echo "▶️ Aria2 PID: $ARIA_PID"
-
-          START_TIME=$(date +%s)
-          LAST_SIZE=0
-          STALL_COUNT=0
-          MAX_STALL=10          # 10 attempts of 60s each = 10 min stall tolerance
-          MAX_WAIT=6600         # 110 minutes (job timeout is 120 min)
-
-          while kill -0 $ARIA_PID 2>/dev/null; do
-            sleep 60
-            ELAPSED=$(( $(date +%s) - START_TIME ))
-            CURRENT_SIZE=$(du -sb downloads 2>/dev/null | cut -f1 || echo 0)
-
-            if [ "$CURRENT_SIZE" -gt "$LAST_SIZE" ]; then
-              STALL_COUNT=0
-              echo "   📦 ${ELAPSED}s - Downloaded $(($CURRENT_SIZE / 1048576)) MB so far"
-            else
-              STALL_COUNT=$((STALL_COUNT + 1))
-              echo "   ⚠️ No progress (stall count $STALL_COUNT)"
-            fi
-            LAST_SIZE=$CURRENT_SIZE
-
-            if [ "$STALL_COUNT" -ge "$MAX_STALL" ]; then
-              echo "❌ Download stalled for too long, stopping..."
-              kill $ARIA_PID 2>/dev/null || true
+          # Wait for Web UI to be available
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8080/api/v2/app/version >/dev/null; then
+              echo "✅ qBittorrent Web UI ready"
               break
             fi
-            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
-              echo "⏰ Reached maximum download time (110 min)"
-              kill $ARIA_PID 2>/dev/null || true
-              break
-            fi
+            sleep 2
           done
 
-          wait $ARIA_PID 2>/dev/null || true
-          ARIA_EXIT=$?
-          echo "🏁 Aria2 exit code: $ARIA_EXIT"
+      - name: 🧲 Add Torrent / Magnet
+        run: |
+          TOKEN="http://127.0.0.1:8080/api/v2"
+          TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
 
-          FILE_COUNT=$(find downloads -type f 2>/dev/null | wc -l)
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "❌ No files downloaded"
+          # Add as URL (magnet or .torrent URL)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "$TOKEN/torrents/add" \
+            --data-urlencode "urls=$TORRENT_LINK" \
+            --data "savepath=/home/runner/downloads")
+
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ Failed to add torrent (HTTP $STATUS)"
             exit 1
           fi
+          echo "✅ Torrent added"
 
-          TOTAL_SIZE=$(du -sh downloads | cut -f1)
-          echo "✅ Download complete: $FILE_COUNT files, $TOTAL_SIZE"
+      - name: ⏳ Monitor Download Progress
+        id: monitor
+        run: |
+          import time, sys, requests
 
-      - name: 📦 Package & Split (like YouTube workflow)
+          API = "http://127.0.0.1:8080/api/v2"
+          TIMEOUT = 6600  # 110 minutes
+          STALL_LIMIT = 10  # 10 consecutive checks without progress
+          CHECK_INTERVAL = 60
+
+          start_time = time.time()
+          last_size = 0
+          stall_count = 0
+
+          print("⏳ Monitoring download...")
+          while True:
+              time.sleep(CHECK_INTERVAL)
+              try:
+                  resp = requests.get(f"{API}/torrents/info", timeout=10)
+                  if resp.status_code != 200:
+                      print(f"⚠️ API error {resp.status_code}")
+                      continue
+                  torrents = resp.json()
+                  if not torrents:
+                      print("⚠️ No torrents found – may have been removed")
+                      sys.exit(1)
+
+                  t = torrents[0]  # we only added one
+                  state = t.get("state", "")
+                  progress = t.get("progress", 0.0)
+                  amount_left = t.get("amount_left", -1)
+                  size = t.get("size", 0)
+                  name = t.get("name", "unknown")
+
+                  print(f"   {name}: {progress*100:.1f}% | state: {state} | {amount_left} bytes left")
+
+                  # Check for completion
+                  if state in ("uploading", "stalledUP", "pausedUP", "forcedUP"):
+                      if amount_left == 0:
+                          print("✅ Download complete!")
+                          break
+
+                  # Error states
+                  if state in ("error", "missingFiles"):
+                      print(f"❌ Torrent in error state: {state}")
+                      sys.exit(1)
+
+                  # Progress detection
+                  if amount_left == last_size:
+                      stall_count += 1
+                      if stall_count >= STALL_LIMIT:
+                          print(f"❌ Download stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} minutes – aborting")
+                          sys.exit(1)
+                  else:
+                      stall_count = 0
+                      last_size = amount_left
+
+                  # Total timeout
+                  if time.time() - start_time > TIMEOUT:
+                      print("⏰ Total time limit reached")
+                      sys.exit(1)
+
+              except requests.ConnectionError:
+                  print("⚠️ Connection lost to qBittorrent")
+                  sys.exit(1)
+        shell: python3
+
+      - name: 🛑 Stop qBittorrent
+        if: always()
+        run: |
+          kill $QBT_PID 2>/dev/null || true
+
+      - name: 📦 Package & Split
         id: package
         run: |
           set -euo pipefail
@@ -207,10 +179,10 @@ jobs:
 
           # Zip everything with max compression
           ZIP_FILE="torrent_content.zip"
-          cd downloads
-          zip -r9 "../deliver/$ZIP_FILE" . >/dev/null 2>&1
-          cd ..
-          rm -rf downloads   # free disk space
+          cd /home/runner/downloads
+          zip -r9 "../../deliver/$ZIP_FILE" . >/dev/null 2>&1 || true
+          cd -
+          rm -rf /home/runner/downloads   # free disk space
 
           ZIP_SIZE=$(stat -c%s "deliver/$ZIP_FILE")
           ZIP_SIZE_MB=$((ZIP_SIZE / 1048576))
@@ -219,28 +191,18 @@ jobs:
           THRESHOLD_MB=${{ github.event.inputs.split_threshold_mb }}
           HARD_LIMIT_MB=90
 
-          # Normalize threshold
-          if [[ "$THRESHOLD_MB" =~ ^[0-9]+$ ]]; then
-            true
-          else
-            echo "❌ Invalid split threshold, defaulting to 0 (never split)"
-            THRESHOLD_MB=0
-          fi
-
-          # Apply splitting only if needed
-          if [[ $THRESHOLD_MB -gt 0 && $ZIP_SIZE_MB -gt $THRESHOLD_MB ]] || [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB ]]; then
-            SPLIT=$THRESHOLD_MB
-            if [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB ]]; then
+          if [[ $ZIP_SIZE_MB -gt $HARD_LIMIT_MB || ($THRESHOLD_MB -gt 0 && $ZIP_SIZE_MB -gt $THRESHOLD_MB) ]]; then
               SPLIT=$HARD_LIMIT_MB
-              echo "🛡️ Forcing split at 90 MB hard limit"
-            fi
-            cd deliver
-            zip -r -s "${SPLIT}m" "${ZIP_FILE}" "${ZIP_FILE}" >/dev/null 2>&1
-            rm -f "$ZIP_FILE"  # remove unsplit zip (we keep the parts)
-            cd ..
-            echo "✂️ Split into parts of ${SPLIT} MB"
+              if [[ $THRESHOLD_MB -gt 0 && $THRESHOLD_MB -lt $HARD_LIMIT_MB ]]; then
+                  SPLIT=$THRESHOLD_MB
+              fi
+              cd deliver
+              zip -r -s "${SPLIT}m" "${ZIP_FILE}" "${ZIP_FILE}" >/dev/null 2>&1
+              rm -f "$ZIP_FILE"
+              cd ..
+              echo "✂️ Split into parts of ${SPLIT} MB"
           else
-            echo "📁 No split needed"
+              echo "📁 No split needed"
           fi
 
           echo "📂 Final delivery contents:"
@@ -313,6 +275,6 @@ jobs:
           echo "📦 Torrent download delivered to branch 'torrent-downloads'"
           echo "🌐 Permanent zip: https://github.com/${{ github.repository }}/archive/refs/heads/torrent-downloads.zip"
           echo "📋 Artifact available in this run's 'Artifacts' section (90 days)"
-          if [[ -n "${{ steps.upload_gofile.outputs.gofile_link }}" ]]; then
-            echo "☁️ Gofile link: ${{ steps.upload_gofile.outputs.gofile_link }}"
+          if [[ -n "${{ steps.package.outputs.gofile_link }}" ]]; then
+            echo "☁️ Gofile link: ${{ steps.package.outputs.gofile_link }}"
           fi
