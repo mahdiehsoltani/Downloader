@@ -443,56 +443,54 @@ jobs:
 
           echo "✅ Playlist rewritten"
 
-      - name: 📥 Download hls.js for self-contained player
+      - name: 📥 Download hls.js for inline embedding
         run: |
           echo "⬇️ Downloading hls.js..."
           curl -sS -L -o /tmp/hls.min.js \
             "https://cdn.jsdelivr.net/npm/hls.js@1.5.0/dist/hls.min.js"
           echo "✅ hls.js downloaded"
 
-      - name: 🎨 Generate Player HTML (video)
+      - name: 🎨 Generate Player HTML (video) – inline hls.js
         if: ${{ github.event.inputs.type == 'video' }}
+        shell: python3 {0}
         run: |
-          REPO="${{ github.repository }}"
-          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
-          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
-          PLAYLIST_URL="${BASE_URL}/master.m3u8"
-          if [[ "${{ steps.process_video.outputs.has_subtitles }}" != "true" ]]; then
-              PLAYLIST_URL="${BASE_URL}/playlist.m3u8"
-          fi
-          HLS_JS_URL="${BASE_URL}/hls.min.js"
+          import sys, os
 
-          cat > /tmp/player.html << 'HTMLEOF'
-          <!DOCTYPE html>
+          with open('/tmp/hls.min.js', 'r') as f:
+              hls_js = f.read()
+
+          PLAYLIST_URL = os.environ['PLAYLIST_URL']
+
+          html = f'''<!DOCTYPE html>
           <html lang="en">
           <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>YouTube HLS Player</title>
-          <script src="__HLS_JS_URL__"></script>
+          <script>{hls_js}</script>
           <style>
-            * { margin:0; padding:0; box-sizing:border-box; }
-            body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }
-            .player-container { width:100%; max-width:960px; position:relative; background:#000; border-radius:8px; overflow:hidden; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
-            video { width:100%; display:block; background:#000; }
-            .controls { position:absolute; bottom:0; left:0; right:0; background:linear-gradient(transparent, rgba(0,0,0,0.8)); padding:40px 16px 16px; transition:opacity 0.3s; }
-            .controls.hidden { opacity:0; pointer-events:none; }
-            .progress-bar { width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; cursor:pointer; margin-bottom:12px; }
-            .progress-fill { height:100%; background:#ff3b30; border-radius:2px; width:0%; transition:width 0.1s linear; }
-            .row { display:flex; align-items:center; gap:12px; color:#fff; }
-            button { background:transparent; border:none; color:#fff; cursor:pointer; font-size:20px; padding:4px 8px; border-radius:4px; transition:background 0.2s; }
-            button:hover { background:rgba(255,255,255,0.1); }
-            .time { font-size:13px; }
-            .volume-slider { width:80px; }
-            .speed-select { background:rgba(255,255,255,0.1); border:none; color:#fff; padding:2px 6px; border-radius:4px; }
-            .download-btn { background:#ff3b30; color:#fff; font-size:14px; padding:6px 12px; border-radius:4px; cursor:pointer; }
-            .download-btn:disabled { opacity:0.5; cursor:not-allowed; }
-            .overlay { position:absolute; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); cursor:pointer; z-index:2; }
-            .overlay-btn { font-size:48px; color:#fff; }
-            .spinner { border:4px solid rgba(255,255,255,0.3); border-top-color:#ff3b30; border-radius:50%; width:40px; height:40px; animation:spin 1s linear infinite; }
-            @keyframes spin { to { transform:rotate(360deg); } }
-            .download-progress { width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; margin-top:8px; display:none; }
-            .download-fill { height:100%; background:#ff3b30; width:0%; }
+            * {{ margin:0; padding:0; box-sizing:border-box; }}
+            body {{ background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }}
+            .player-container {{ width:100%; max-width:960px; position:relative; background:#000; border-radius:8px; overflow:hidden; box-shadow:0 8px 32px rgba(0,0,0,0.5); }}
+            video {{ width:100%; display:block; background:#000; }}
+            .controls {{ position:absolute; bottom:0; left:0; right:0; background:linear-gradient(transparent, rgba(0,0,0,0.8)); padding:40px 16px 16px; transition:opacity 0.3s; }}
+            .controls.hidden {{ opacity:0; pointer-events:none; }}
+            .progress-bar {{ width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; cursor:pointer; margin-bottom:12px; }}
+            .progress-fill {{ height:100%; background:#ff3b30; border-radius:2px; width:0%; transition:width 0.1s linear; }}
+            .row {{ display:flex; align-items:center; gap:12px; color:#fff; }}
+            button {{ background:transparent; border:none; color:#fff; cursor:pointer; font-size:20px; padding:4px 8px; border-radius:4px; transition:background 0.2s; }}
+            button:hover {{ background:rgba(255,255,255,0.1); }}
+            .time {{ font-size:13px; }}
+            .volume-slider {{ width:80px; }}
+            .speed-select {{ background:rgba(255,255,255,0.1); border:none; color:#fff; padding:2px 6px; border-radius:4px; }}
+            .download-btn {{ background:#ff3b30; color:#fff; font-size:14px; padding:6px 12px; border-radius:4px; cursor:pointer; }}
+            .download-btn:disabled {{ opacity:0.5; cursor:not-allowed; }}
+            .overlay {{ position:absolute; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); cursor:pointer; z-index:2; }}
+            .overlay-btn {{ font-size:48px; color:#fff; }}
+            .spinner {{ border:4px solid rgba(255,255,255,0.3); border-top-color:#ff3b30; border-radius:50%; width:40px; height:40px; animation:spin 1s linear infinite; }}
+            @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
+            .download-progress {{ width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; margin-top:8px; display:none; }}
+            .download-fill {{ height:100%; background:#ff3b30; width:0%; }}
           </style>
           </head>
           <body>
@@ -540,126 +538,116 @@ jobs:
 
           let hls;
 
-          function initPlayer() {
-            if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-              hls = new Hls({ debug: false });
-              hls.loadSource('__PLAYLIST_URL__');
+          function initPlayer() {{
+            if (typeof Hls !== 'undefined' && Hls.isSupported()) {{
+              hls = new Hls({{ debug: false }});
+              hls.loadSource('{PLAYLIST_URL}');
               hls.attachMedia(video);
-              hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              hls.on(Hls.Events.MANIFEST_PARSED, () => {{
                 console.log('HLS manifest loaded');
                 hideSpinner();
-              });
-              hls.on(Hls.Events.ERROR, (event, data) => {
-                if (data.fatal) {
+              }});
+              hls.on(Hls.Events.ERROR, (event, data) => {{
+                if (data.fatal) {{
                   console.error('HLS fatal error', data);
                   alert('Playback error. Please try again later.');
-                }
-              });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-              video.src = '__PLAYLIST_URL__';
-            } else {
+                }}
+              }});
+            }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+              video.src = '{PLAYLIST_URL}';
+            }} else {{
               alert('Your browser does not support HLS playback.');
-            }
-          }
+            }}
+          }}
 
-          function hideSpinner() {
+          function hideSpinner() {{
             const overlay = playOverlay;
             if (overlay) overlay.innerHTML = '<div class="overlay-btn">▶</div>';
-          }
+          }}
 
-          function playVideo() {
+          function playVideo() {{
             video.play();
             playOverlay.style.display = 'none';
             controls.classList.remove('hidden');
-          }
+          }}
 
-          function togglePlay() {
-            if (video.paused) { video.play(); playBtn.textContent = '⏸'; }
-            else { video.pause(); playBtn.textContent = '▶'; }
-          }
+          function togglePlay() {{
+            if (video.paused) {{ video.play(); playBtn.textContent = '⏸'; }}
+            else {{ video.pause(); playBtn.textContent = '▶'; }}
+          }}
 
-          video.addEventListener('timeupdate', () => {
+          video.addEventListener('timeupdate', () => {{
             const pct = (video.currentTime / video.duration) * 100;
             progressFill.style.width = pct + '%';
             timeDisplay.textContent = formatTime(video.currentTime) + ' / ' + formatTime(video.duration);
             playBtn.textContent = video.paused ? '▶' : '⏸';
-          });
+          }});
 
-          function seek(e) {
+          function seek(e) {{
             const rect = progressBar.getBoundingClientRect();
             const ratio = (e.clientX - rect.left) / rect.width;
             video.currentTime = ratio * video.duration;
-          }
+          }}
 
-          function setVolume(val) { video.volume = val / 100; }
-          function muteToggle() { video.muted = !video.muted; }
-          function setSpeed(speed) { video.playbackRate = parseFloat(speed); }
-          function toggleFullscreen() {
+          function setVolume(val) {{ video.volume = val / 100; }}
+          function muteToggle() {{ video.muted = !video.muted; }}
+          function setSpeed(speed) {{ video.playbackRate = parseFloat(speed); }}
+          function toggleFullscreen() {{
             if (document.fullscreenElement) document.exitFullscreen();
             else video.parentElement.requestFullscreen();
-          }
-          function formatTime(s) {
+          }}
+          function formatTime(s) {{
             const m = Math.floor(s / 60);
             const sec = Math.floor(s % 60);
             return m + ':' + (sec < 10 ? '0' : '') + sec;
-          }
+          }}
 
-          async function downloadVideo() {
-            const playlistUrl = '__PLAYLIST_URL__';
+          async function downloadVideo() {{
+            const playlistUrl = '{PLAYLIST_URL}';
             downloadProgress.style.display = 'block';
             downloadFill.style.width = '0%';
-            try {
+            try {{
               const response = await fetch(playlistUrl);
               const text = await response.text();
-              const lines = text.split('\n').filter(l => l.endsWith('.ts'));
+              const lines = text.split('\\n').filter(l => l.endsWith('.ts'));
               const total = lines.length;
               let downloaded = 0;
               const segments = [];
-              for (const url of lines) {
+              for (const url of lines) {{
                 const segResp = await fetch(url);
                 const blob = await segResp.blob();
                 segments.push(blob);
                 downloaded++;
                 downloadFill.style.width = ((downloaded / total) * 100) + '%';
-              }
-              const combined = new Blob(segments, { type: 'video/mp2t' });
+              }}
+              const combined = new Blob(segments, {{ type: 'video/mp2t' }});
               const a = document.createElement('a');
               a.href = URL.createObjectURL(combined);
               a.download = 'video.ts';
               a.click();
               URL.revokeObjectURL(a.href);
               downloadProgress.style.display = 'none';
-            } catch (err) {
+            }} catch (err) {{
               console.error('Download failed', err);
               alert('Download failed. Please try again.');
               downloadProgress.style.display = 'none';
-            }
-          }
+            }}
+          }}
 
-          // Wait for Hls to be defined before initializing
-          if (typeof Hls !== 'undefined') {
+          if (typeof Hls !== 'undefined') {{
             initPlayer();
-          } else {
-            let tries = 0;
-            const checkInterval = setInterval(() => {
-              if (typeof Hls !== 'undefined') {
-                clearInterval(checkInterval);
-                initPlayer();
-              }
-              if (++tries > 50) {
-                clearInterval(checkInterval);
-                console.error('Hls.js failed to load');
-              }
-            }, 100);
-          }
+          }} else {{
+            console.error('Hls.js not defined');
+          }}
           </script>
           </body>
-          </html>
-          HTMLEOF
+          </html>'''
 
-          sed -i "s|__HLS_JS_URL__|${HLS_JS_URL}|g" /tmp/player.html
-          sed -i "s|__PLAYLIST_URL__|${PLAYLIST_URL}|g" /tmp/player.html
-          cp /tmp/player.html ./player.html
+          with open('/tmp/player.html', 'w', encoding='utf-8') as f:
+              f.write(html)
+          print("✅ Player HTML generated (hls.js inlined)")
+        env:
+          PLAYLIST_URL: ${{ steps.process_video.outputs.has_subtitles == 'true' && format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream-tmp-{1}/master.m3u8', github.repository, github.run_id) || format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream-tmp-{1}/playlist.m3u8', github.repository, github.run_id) }}
 
       - name: 🎨 Generate Audio Player HTML (audio)
         if: ${{ github.event.inputs.type == 'audio' }}
@@ -699,11 +687,10 @@ jobs:
             cp /tmp/hls/*.ts "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/hls/*.m3u8 "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/subtitles.vtt "$ORPHAN_DIR/" 2>/dev/null || true
-            cp ./player.html "$ORPHAN_DIR/"
-            cp /tmp/hls.min.js "$ORPHAN_DIR/"
+            cp /tmp/player.html "$ORPHAN_DIR/"
           else
             cp /tmp/audio/audio.mp3 "$ORPHAN_DIR/"
-            cp ./audio-player.html "$ORPHAN_DIR/"
+            cp /tmp/audio-player.html "$ORPHAN_DIR/"
           fi
 
           cd "$ORPHAN_DIR"
@@ -743,8 +730,15 @@ jobs:
 
       - name: 📋 Summary
         run: |
+          REPO="${{ github.repository }}"
+          USER=$(echo "$REPO" | cut -d'/' -f1)
+          REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
           if [[ "${{ github.event.inputs.type }}" == 'video' ]]; then
-            echo "🎬 Stream player: https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/youtube-stream/player.html"
+            echo "🎬 Player page (enable GitHub Pages first): https://${USER}.github.io/${REPO_NAME}/player.html"
+            echo "📥 Or download & open: https://raw.githubusercontent.com/${REPO}/refs/heads/youtube-stream/player.html"
           else
-            echo "🎵 Audio player: https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/youtube-stream/audio-player.html"
+            echo "🎵 Audio page: https://${USER}.github.io/${REPO_NAME}/audio-player.html"
+            echo "📥 Or download & open: https://raw.githubusercontent.com/${REPO}/refs/heads/youtube-stream/audio-player.html"
           fi
+          echo ""
+          echo "⚠️ To use the GitHub Pages link, go to Settings → Pages and set the source branch to 'youtube-stream'."
