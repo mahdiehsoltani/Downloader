@@ -22,7 +22,7 @@ jobs:
   download-and-deliver:
     name: 🚀 Torrent Download & Deliver (qBittorrent)
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360          # maximum allowed (6 hours)
     permissions:
       contents: write
 
@@ -33,7 +33,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: main
 
-      - name: 🔧 Install Dependencies (with retry)
+      - name: 🔧 Install System Dependencies (with retry)
         run: |
           set -euo pipefail
           for i in 1 2 3; do
@@ -41,16 +41,23 @@ jobs:
             sudo apt-get update && sudo apt-get install -y qbittorrent-nox curl jq zip python3-pip && break || sleep 10
           done
 
+      - name: 💾 Restore cached pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('.github/workflows/torrent-downloader.yml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
       - name: 🐍 Install Python API library
         run: pip install requests
 
-      - name: ⚙️ Prepare qBittorrent configuration
+      - name: ⚙️ Start qBittorrent & capture temporary password
         run: |
           set -euo pipefail
           QBT_PROFILE="/tmp/qbt-profile"
           mkdir -p "$QBT_PROFILE/qBittorrent"
 
-          # Create config that allows localhost without password
           cat > "$QBT_PROFILE/qBittorrent/qBittorrent.conf" << 'EOF'
           [Preferences]
           WebUI\Address=*
@@ -67,28 +74,36 @@ jobs:
           Session\Preallocation=true
           EOF
 
-          # Start headless qbittorrent
           echo "🟢 Starting qBittorrent..."
-          qbittorrent-nox --profile="$QBT_PROFILE" --webui-port=8080 &
+          qbittorrent-nox --profile="$QBT_PROFILE" --webui-port=8080 2>&1 > /tmp/qbt.log &
           QBT_PID=$!
           echo "QBT_PID=$QBT_PID" >> $GITHUB_ENV
 
-          # Wait for Web UI to be available
+          # Wait for Web UI to be ready
           for i in {1..30}; do
-            if curl -s http://127.0.0.1:8080/api/v2/app/version >/dev/null; then
+            if curl -s http://127.0.0.1:8080/api/v2/app/version >/dev/null 2>&1; then
               echo "✅ qBittorrent Web UI ready"
               break
             fi
             sleep 2
           done
 
+          # Extract the temporary password from the log
+          PASSWORD=$(grep -oP 'temporary password is provided for this session: \K\S+' /tmp/qbt.log || echo "")
+          if [ -z "$PASSWORD" ]; then
+            echo "❌ Could not find temporary password in qBittorrent log"
+            exit 1
+          fi
+          echo "🔑 Temporary password: $PASSWORD"
+          echo "QBT_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
       - name: 🧲 Add Torrent / Magnet
         run: |
           TOKEN="http://127.0.0.1:8080/api/v2"
           TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
 
-          # Add as URL (magnet or .torrent URL)
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -u "admin:$QBT_PASSWORD" \
             -X POST "$TOKEN/torrents/add" \
             --data-urlencode "urls=$TORRENT_LINK" \
             --data "savepath=/home/runner/downloads")
@@ -98,26 +113,33 @@ jobs:
             exit 1
           fi
           echo "✅ Torrent added"
+        env:
+          QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
 
       - name: ⏳ Monitor Download Progress
         id: monitor
+        shell: python3
+        env:
+          QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
         run: |
-          import time, sys, requests
+          import time, sys, requests, os
 
+          PASSWORD = os.environ.get('QBT_PASSWORD', '')
           API = "http://127.0.0.1:8080/api/v2"
-          TIMEOUT = 6600  # 110 minutes
-          STALL_LIMIT = 10  # 10 consecutive checks without progress
+          AUTH = ('admin', PASSWORD)
+          TIMEOUT = 360*60 - 600    # stop a bit before job limit to allow cleanup
+          STALL_LIMIT = 10
           CHECK_INTERVAL = 60
 
           start_time = time.time()
-          last_size = 0
+          last_left = -1
           stall_count = 0
 
           print("⏳ Monitoring download...")
           while True:
               time.sleep(CHECK_INTERVAL)
               try:
-                  resp = requests.get(f"{API}/torrents/info", timeout=10)
+                  resp = requests.get(f"{API}/torrents/info", auth=AUTH, timeout=10)
                   if resp.status_code != 200:
                       print(f"⚠️ API error {resp.status_code}")
                       continue
@@ -126,37 +148,30 @@ jobs:
                       print("⚠️ No torrents found – may have been removed")
                       sys.exit(1)
 
-                  t = torrents[0]  # we only added one
+                  t = torrents[0]
                   state = t.get("state", "")
                   progress = t.get("progress", 0.0)
                   amount_left = t.get("amount_left", -1)
-                  size = t.get("size", 0)
                   name = t.get("name", "unknown")
-
                   print(f"   {name}: {progress*100:.1f}% | state: {state} | {amount_left} bytes left")
 
-                  # Check for completion
-                  if state in ("uploading", "stalledUP", "pausedUP", "forcedUP"):
-                      if amount_left == 0:
-                          print("✅ Download complete!")
-                          break
+                  if state in ("uploading", "stalledUP", "pausedUP", "forcedUP") and amount_left == 0:
+                      print("✅ Download complete!")
+                      break
 
-                  # Error states
                   if state in ("error", "missingFiles"):
                       print(f"❌ Torrent in error state: {state}")
                       sys.exit(1)
 
-                  # Progress detection
-                  if amount_left == last_size:
+                  if amount_left == last_left:
                       stall_count += 1
                       if stall_count >= STALL_LIMIT:
-                          print(f"❌ Download stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} minutes – aborting")
+                          print(f"❌ Download stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} min")
                           sys.exit(1)
                   else:
                       stall_count = 0
-                      last_size = amount_left
+                      last_left = amount_left
 
-                  # Total timeout
                   if time.time() - start_time > TIMEOUT:
                       print("⏰ Total time limit reached")
                       sys.exit(1)
@@ -164,7 +179,6 @@ jobs:
               except requests.ConnectionError:
                   print("⚠️ Connection lost to qBittorrent")
                   sys.exit(1)
-        shell: python3
 
       - name: 🛑 Stop qBittorrent
         if: always()
