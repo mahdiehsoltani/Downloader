@@ -221,7 +221,6 @@ jobs:
               progress = status_data.get('progress', 0)
               print(f"{status} | {progress}%")
 
-              # Look for subtitles early
               if not subtitle_url and status_data.get('subtitles'):
                   subtitle_url = status_data['subtitles']
                   print("📝 Subtitle URL found")
@@ -230,7 +229,6 @@ jobs:
                   download_url = status_data.get('downloadUrl')
                   if download_url:
                       print("🎉 Completed successfully!")
-                      # final subtitle check in completed response
                       if status_data.get('subtitles'):
                           subtitle_url = status_data['subtitles']
                   break
@@ -257,7 +255,6 @@ jobs:
               print("⏰ Conversion did not complete in time")
               sys.exit(1)
 
-          # Filename
           video_id_match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', YT_URL)
           video_id = video_id_match.group(1) if video_id_match else "unknown"
           safe_title = re.sub(r'[^a-zA-Z0-9\-_]', '_', title.replace(' ', '_'))[:60].strip('_') or video_id
@@ -298,7 +295,6 @@ jobs:
           fi
 
       - name: ⬇️ Download Media File
-        id: download
         run: |
           set -euo pipefail
           DOWNLOAD_URL=$(sed -n '1p' /tmp/metadata.txt)
@@ -381,12 +377,10 @@ jobs:
           SEGMENT_DIR="/tmp/hls"
           mkdir -p "$SEGMENT_DIR"
 
-          # Download subtitles if available
           SUBTITLE_FILE=""
           if [[ "$SUBTITLE_LINE" != "NONE" && -n "$SUBTITLE_LINE" ]]; then
             echo "📝 Downloading subtitles..."
             curl -sS -L -o /tmp/subtitle_raw "$SUBTITLE_LINE"
-            # Convert to VTT if needed (assume .srt or .vtt)
             ffmpeg -y -i /tmp/subtitle_raw -f webvtt /tmp/subtitles.vtt 2>/dev/null || true
             if [ -f /tmp/subtitles.vtt ]; then
               SUBTITLE_FILE="/tmp/subtitles.vtt"
@@ -398,10 +392,8 @@ jobs:
             echo "📝 No subtitles available"
           fi
 
-          # Segment video into HLS
           echo "✂️ Segmenting video..."
           if [ -n "$SUBTITLE_FILE" ]; then
-            # Include subtitles as a separate track
             ffmpeg -y -i "$INPUT_FILE" -i "$SUBTITLE_FILE" \
               -c:v copy -c:a copy -c:s webvtt \
               -f hls -hls_time 10 -hls_list_size 0 \
@@ -439,13 +431,11 @@ jobs:
           BRANCH="youtube-stream-tmp-${{ github.run_id }}"
           BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
 
-          # Rewrite master playlist if exists, else the single playlist
           if [ -f "$SEGMENT_DIR/master.m3u8" ]; then
             sed -i "s|playlist.m3u8|${BASE_URL}/playlist.m3u8|g" "$SEGMENT_DIR/master.m3u8"
-            sed -i "s|subtitle_eng.m3u8|${BASE_URL}/subtitle_eng.m3u8|g" "$SEGMENT_DIR/master.m3u8"  # adjust as needed
+            sed -i "s|subtitle_eng.m3u8|${BASE_URL}/subtitle_eng.m3u8|g" "$SEGMENT_DIR/master.m3u8"
           fi
 
-          # Rewrite segment playlist(s)
           for pl in "$SEGMENT_DIR"/*.m3u8; do
             sed -i "s|segment_|${BASE_URL}/segment_|g" "$pl"
           done
@@ -605,7 +595,6 @@ jobs:
             return m + ':' + (sec < 10 ? '0' : '') + sec;
           }
 
-          // Download logic
           async function downloadVideo() {
             const playlistUrl = '${PLAYLIST_URL}';
             downloadProgress.style.display = 'block';
@@ -671,14 +660,14 @@ jobs:
           HTML2
           cp /tmp/audio-player.html ./audio-player.html
 
-      - name: 🚀 Push to Temporary Branch
+      - name: 🚀 Push to Temp Branch & Promote
         run: |
           set -euo pipefail
           TEMP_BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          REAL_BRANCH="youtube-stream"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
           ORPHAN_DIR=$(mktemp -d)
-          # Copy all deliverable files
           if [[ "${{ github.event.inputs.type }}" == 'video' ]]; then
             cp /tmp/hls/*.ts "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/hls/*.m3u8 "$ORPHAN_DIR/" 2>/dev/null || true
@@ -695,7 +684,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add origin "$REPO_URL"
 
-          # Batched push (if many .ts files)
           mapfile -t FILES < <(ls -1)
           TOTAL=${#FILES[@]}
           BATCH_SIZE=10
@@ -719,15 +707,12 @@ jobs:
             done
             FIRST=$((FIRST + BATCH_SIZE))
           done
-          echo "✅ All batches pushed"
 
-      - name: 🔀 Promote to Real Branch
-        run: |
-          TEMP_BRANCH="youtube-stream-tmp-${{ github.run_id }}"
-          REAL_BRANCH="youtube-stream"
-          git push origin "+refs/heads/$TEMP_BRANCH:refs/heads/$REAL_BRANCH"
+          # Promote directly from the orphan directory
+          echo "🔀 Promoting $TEMP_BRANCH → $REAL_BRANCH"
+          git push origin "+HEAD:refs/heads/$REAL_BRANCH"
           git push origin --delete "$TEMP_BRANCH"
-          echo "✅ Branch $REAL_BRANCH updated"
+          echo "✅ Branch $REAL_BRANCH updated, temp branch deleted"
 
       - name: 📋 Summary
         run: |
