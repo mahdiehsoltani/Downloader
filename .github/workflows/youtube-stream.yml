@@ -46,25 +46,31 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: 📦 Restore cached apt packages
+      - name: 📦 Restore cached apt packages (into user‑owned directory)
         uses: actions/cache@v4
         with:
-          path: |
-            /var/cache/apt/archives/*.deb
-            !/var/cache/apt/archives/lock
-            !/var/cache/apt/archives/partial
+          path: ~/.apt-cache
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/youtube-stream.yml') }}
           restore-keys: |
             apt-${{ runner.os }}-
+
+      - name: 📋 Copy cached debs back to apt archives
+        run: |
+          if [ -d ~/.apt-cache ] && [ "$(ls -A ~/.apt-cache 2>/dev/null)" ]; then
+            echo "📋 Restoring apt cache..."
+            sudo cp ~/.apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+            sudo chmod 644 /var/cache/apt/archives/*.deb
+            echo "✅ Apt cache restored"
+          else
+            echo "📋 No apt cache found – will download fresh packages"
+          fi
 
       - name: 🔧 Install Dependencies (parallel apt & pip, cached debs)
         run: |
           set -euo pipefail
           (
-            for i in 1 2 3; do
-              echo "🔄 apt-get attempt $i..."
-              sudo apt-get update && sudo apt-get install -y curl jq ffmpeg python3-pip && break || sleep 10
-            done
+            echo "🔄 apt-get update & install..."
+            sudo apt-get update && sudo apt-get install -y curl jq ffmpeg python3-pip
           ) &
           APT_PID=$!
 
@@ -77,13 +83,16 @@ jobs:
           wait $PIP_PID
           echo "✅ Dependencies installed"
 
-      - name: 📦 Save apt cache (post-install)
+      - name: 💿 Save apt cache for future runs
+        run: |
+          mkdir -p ~/.apt-cache
+          sudo cp /var/cache/apt/archives/*.deb ~/.apt-cache/ 2>/dev/null || true
+          echo "✅ Apt cache saved"
+
+      - name: 📦 Cache apt packages (user‑owned)
         uses: actions/cache/save@v4
         with:
-          path: |
-            /var/cache/apt/archives/*.deb
-            !/var/cache/apt/archives/lock
-            !/var/cache/apt/archives/partial
+          path: ~/.apt-cache
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/youtube-stream.yml') }}
 
       - name: 🎯 Request Conversion & Gather Metadata
