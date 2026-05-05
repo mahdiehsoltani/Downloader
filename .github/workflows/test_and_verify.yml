@@ -1,81 +1,94 @@
-name: 🧪 Test Torrent RSS Feeds (Full Debug)
+name: 🔎 Search Academic Torrents (RSS → Branch)
 
 on:
-  workflow_dispatch:   # manual trigger only
+  workflow_dispatch:
+    inputs:
+      query:
+        description: '🔍 Search term (matches in title)'
+        required: true
+        type: string
+      limit:
+        description: '📊 Max results to show'
+        required: false
+        type: number
+        default: 20
+      match_name_only:
+        description: '📛 Match only torrent name (otherwise also description)'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
-  test-feeds:
+  search-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - name: 📡 Probe each feed & collect status (debug)
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies
+        run: pip install feedparser requests beautifulsoup4
+
+      - name: 🔧 Decode Python script
+        run: |
+          # Replace the placeholder with your base64‑encoded script
+          ENCODED="aW1wb3J0IG9zLCBzeXMsIHRpbWUsIHJlCmltcG9ydCB4bWwuZXRyZWUuRWxlbWVudFRyZWUgYXMgRVQKZnJvbSBjb25jdXJyZW50LmZ1dHVyZXMgaW1wb3J0IFRocmVhZFBvb2xFeGVjdXRvciwgYXNfY29tcGxldGVkCmZyb20gdXJsbGliLnBhcnNlIGltcG9ydCBxdW90ZV9wbHVzCgppbXBvcnQgcmVxdWVzdHMKaW1wb3J0IGZlZWRwYXJzZXIKZnJvbSBiczQgaW1wb3J0IEJlYXV0aWZ1bFNvdXAgICAjIGFkZGVkIGZvciBIVE1MIHNjcmFwaW5nCgojIC0tLS0tLS0tLS0gQ29uZmlndXJhdGlvbiAtLS0tLS0tLS0tClFVRVJZID0gb3MuZW52aXJvblsnUVVFUlknXS5sb3dlcigpCkxJTUlUID0gaW50KG9zLmVudmlyb25bJ0xJTUlUJ10pCk5BTUVfT05MWSA9IG9zLmVudmlyb25bJ01BVENIX05BTUVfT05MWSddID09ICd0cnVlJwoKRkVUQ0hfVElNRU9VVCA9IDIwICAgIyBzZWNvbmRzIHBlciBzb3VyY2UKTUFYX1dPUktFUlMgPSA4ICAgICAgIyBtb3JlIHBhcmFsbGVsIGZldGNoZXMgb2theQoKSEVBREVSUyA9IHsKICAgICJVc2VyLUFnZW50IjogIk1vemlsbGEvNS4wIChXaW5kb3dzIE5UIDEwLjA7IFdpbjY0OyB4NjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xMjAuMC4wLjAgU2FmYXJpLzUzNy4zNiIKfQoKIyAtLS0tLS0tLS0tIFNvdXJjZSBkZWZpbml0aW9ucyAtLS0tLS0tLS0tCiMgRWFjaCBzb3VyY2UgaXMgYSBkaWN0IHdpdGggcGFyc2VyIHR5cGU6ICJyc3MiLCAieG1sIiwgb3IgImh0bWwiClNPVVJDRVMgPSBbCiAgICAjIDEuIEFjYWRlbWljIFRvcnJlbnRzIFhNTCBkdW1wCiAgICB7CiAgICAgICAgIm5hbWUiOiAiQWNhZGVtaWNUb3JyZW50cyIsCiAgICAgICAgInVybCI6ICJodHRwczovL2FjYWRlbWljdG9ycmVudHMuY29tL2RhdGFiYXNlLnhtbCIsCiAgICAgICAgInBhcnNlciI6ICJ4bWwiLAogICAgICAgICJ0aXRsZV9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5maW5kKCd0aXRsZScpLnRleHQgaWYgaXRlbS5maW5kKCd0aXRsZScpIGlzIG5vdCBOb25lIGVsc2UgIiIsCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogZiJtYWduZXQ6P3h0PXVybjpidGloOntpdGVtLmZpbmQoJ2luZm9oYXNoJykudGV4dC5zdHJpcCgpfSIgaWYgaXRlbS5maW5kKCdpbmZvaGFzaCcpIGlzIG5vdCBOb25lIGVsc2UgIiIsCiAgICB9LAogICAgIyAyLiAxMzM3eCBNb3ZpZXMgUlNTCiAgICB7CiAgICAgICAgIm5hbWUiOiAiMTMzN3gtTW92aWVzIiwKICAgICAgICAidXJsIjogImh0dHBzOi8vMTMzN3gudG8vY2F0L01vdmllcy8xL3Jzcy54bWwiLAogICAgICAgICJwYXJzZXIiOiAicnNzIiwKICAgICAgICAidGl0bGVfa2V5IjogbGFtYmRhIGl0ZW06IGl0ZW0uZ2V0KCd0aXRsZScsICcnKSwKICAgICAgICAibWFnbmV0X2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgnbGluaycsICcnKSBpZiAnbWFnbmV0JyBpbiBpdGVtLmdldCgnbGluaycsICcnKSBlbHNlIGl0ZW0uZ2V0KCd0b3JyZW50X21hZ25ldHVybCcsICcnKSwKICAgIH0sCiAgICAjIDMuIDEzMzd4IFRWIFJTUwogICAgewogICAgICAgICJuYW1lIjogIjEzMzd4LVRWIiwKICAgICAgICAidXJsIjogImh0dHBzOi8vMTMzN3gudG8vY2F0L1RWLzEvcnNzLnhtbCIsCiAgICAgICAgInBhcnNlciI6ICJyc3MiLAogICAgICAgICJ0aXRsZV9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ3RpdGxlJywgJycpLAogICAgICAgICJtYWduZXRfa2V5IjogbGFtYmRhIGl0ZW06IGl0ZW0uZ2V0KCdsaW5rJywgJycpIGlmICdtYWduZXQnIGluIGl0ZW0uZ2V0KCdsaW5rJywgJycpIGVsc2UgaXRlbS5nZXQoJ3RvcnJlbnRfbWFnbmV0dXJsJywgJycpLAogICAgfSwKICAgICMgNC4gTnlhYS5zaSAoYW5pbWUpCiAgICB7CiAgICAgICAgIm5hbWUiOiAiTnlhYSIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly9ueWFhLnNpLz9wYWdlPXJzcyZxPXtxdW90ZV9wbHVzKFFVRVJZKX0mYz0wXzAmZj0wIiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LAogICAgIyA1LiBCVDRHIHNlYXJjaCBSU1MKICAgIHsKICAgICAgICAibmFtZSI6ICJCVDRHIiwKICAgICAgICAidXJsIjogZiJodHRwczovL2J0NGdwcnguY29tL3NlYXJjaD9xPXtxdW90ZV9wbHVzKFFVRVJZKX0mcnNzPTEiLAogICAgICAgICJwYXJzZXIiOiAicnNzIiwKICAgICAgICAidGl0bGVfa2V5IjogbGFtYmRhIGl0ZW06IGl0ZW0uZ2V0KCd0aXRsZScsICcnKSwKICAgICAgICAibWFnbmV0X2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgnbGluaycsICcnKSwKICAgIH0sCiAgICAjIDYuIE1hZ25ldERMIHNlYXJjaCBSU1MKICAgIHsKICAgICAgICAibmFtZSI6ICJNYWduZXRETCIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly93d3cubWFnbmV0ZGwuY29tL3Jzcy54bWw/cT17cXVvdGVfcGx1cyhRVUVSWSl9IiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LAogICAgIyA3LiBUb3Jsb2NrIG1vdmllcyBSU1MKICAgIHsKICAgICAgICAibmFtZSI6ICJUb3Jsb2NrIiwKICAgICAgICAidXJsIjogImh0dHBzOi8vd3d3LnRvcmxvY2suY29tL21vdmllcy9yc3MueG1sIiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LAogICAgIyA4LiBFWlRWIFRW4oCRc2hvdyBSU1MKICAgIHsKICAgICAgICAibmFtZSI6ICJFWlRWIiwKICAgICAgICAidXJsIjogImh0dHBzOi8vZXp0dngudG8vZXpyc3MueG1sIiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LAogICAgIyA5LiBZVFMgKG1vdmllcykgUlNTIChZVFMubXgpCiAgICB7CiAgICAgICAgIm5hbWUiOiAiWVRTIiwKICAgICAgICAidXJsIjogImh0dHBzOi8veXRzLm14L3JzcyIsCiAgICAgICAgInBhcnNlciI6ICJyc3MiLAogICAgICAgICJ0aXRsZV9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ3RpdGxlJywgJycpLAogICAgICAgICJtYWduZXRfa2V5IjogbGFtYmRhIGl0ZW06IGl0ZW0uZ2V0KCdsaW5rJywgJycpLAogICAgfSwKICAgICMgMTAuIFRoZSBQaXJhdGUgQmF5IOKAkyBubyBSU1MsIHVzZSBIVE1MIHNjcmFwZXIKICAgIHsKICAgICAgICAibmFtZSI6ICJUaGVQaXJhdGVCYXkiLAogICAgICAgICJ1cmwiOiBmImh0dHBzOi8vdGhlcGlyYXRlYmF5Lm9yZy9zZWFyY2gve3F1b3RlX3BsdXMoUVVFUlkpfS8wLzk5LzAiLAogICAgICAgICJwYXJzZXIiOiAiaHRtbCIsCiAgICAgICAgInNjcmFwZXIiOiAidHBiIiwKICAgIH0sCiAgICAjIDExLiBMaW1lVG9ycmVudHMg4oCTIEhUTUwgc2NyYXBlcgogICAgewogICAgICAgICJuYW1lIjogIkxpbWVUb3JyZW50cyIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly93d3cubGltZXRvcnJlbnRzLmxvbC9zZWFyY2gvYWxsL3txdW90ZV9wbHVzKFFVRVJZKX0vIiwKICAgICAgICAicGFyc2VyIjogImh0bWwiLAogICAgICAgICJzY3JhcGVyIjogImxpbWV0b3JyZW50cyIsCiAgICB9LAogICAgIyAxMi4gWm9vcWxlIOKAkyBSU1MgKHZlcmlmaWVkKQogICAgewogICAgICAgICJuYW1lIjogIlpvb3FsZSIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly96b29xbGUuY29tL3NlYXJjaD9xPXtxdW90ZV9wbHVzKFFVRVJZKX0mZm10PXJzcyIsCiAgICAgICAgInBhcnNlciI6ICJyc3MiLAogICAgICAgICJ0aXRsZV9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ3RpdGxlJywgJycpLAogICAgICAgICJtYWduZXRfa2V5IjogbGFtYmRhIGl0ZW06IGl0ZW0uZ2V0KCdsaW5rJywgJycpLAogICAgfSwKICAgICMgMTMuIEdsb1RvcnJlbnRzIOKAkyBSU1MKICAgIHsKICAgICAgICAibmFtZSI6ICJHbG9Ub3JyZW50cyIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly9nbG90b3JyZW50cy5jb20vc2VhcmNoP3E9e3F1b3RlX3BsdXMoUVVFUlkpfSZmb3JtYXQ9cnNzIiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LAogICAgIyAxNC4gVG9ycmVudERvd25sb2FkcyDigJMgUlNTCiAgICB7CiAgICAgICAgIm5hbWUiOiAiVG9ycmVudERvd25sb2FkcyIsCiAgICAgICAgInVybCI6IGYiaHR0cHM6Ly93d3cudG9ycmVudGRvd25sb2Fkcy5wcm8vc2VhcmNoLz9zZWFyY2g9e3F1b3RlX3BsdXMoUVVFUlkpfSZmb3JtYXQ9cnNzIiwKICAgICAgICAicGFyc2VyIjogInJzcyIsCiAgICAgICAgInRpdGxlX2tleSI6IGxhbWJkYSBpdGVtOiBpdGVtLmdldCgndGl0bGUnLCAnJyksCiAgICAgICAgIm1hZ25ldF9rZXkiOiBsYW1iZGEgaXRlbTogaXRlbS5nZXQoJ2xpbmsnLCAnJyksCiAgICB9LApdCgojIC0tLS0tLS0tLS0gSFRNTCBzY3JhcGVycyAtLS0tLS0tLS0tCmRlZiBzY3JhcGVfdHBiKHNvdXApOgogICAgIiIiRXh0cmFjdCB0aXRsZXMgYW5kIG1hZ25ldCBsaW5rcyBmcm9tIFRoZSBQaXJhdGUgQmF5IHNlYXJjaCByZXN1bHRzLiIiIgogICAgcmVzdWx0cyA9IFtdCiAgICBmb3Igcm93IGluIHNvdXAuc2VsZWN0KCJ0YWJsZSNzZWFyY2hSZXN1bHQgdHIiKToKICAgICAgICB0aXRsZV9lbCA9IHJvdy5zZWxlY3Rfb25lKCJhLmRldExpbmsiKQogICAgICAgIGlmIG5vdCB0aXRsZV9lbDoKICAgICAgICAgICAgY29udGludWUKICAgICAgICB0aXRsZSA9IHRpdGxlX2VsLmdldF90ZXh0KHN0cmlwPVRydWUpCiAgICAgICAgbWFnbmV0X2VsID0gcm93LnNlbGVjdF9vbmUoImFbaHJlZl49J21hZ25ldCddIikKICAgICAgICBtYWduZXQgPSBtYWduZXRfZWxbJ2hyZWYnXSBpZiBtYWduZXRfZWwgZWxzZSBOb25lCiAgICAgICAgaWYgdGl0bGUgYW5kIG1hZ25ldDoKICAgICAgICAgICAgcmVzdWx0cy5hcHBlbmQoKHRpdGxlLCBtYWduZXQpKQogICAgcmV0dXJuIHJlc3VsdHMKCmRlZiBzY3JhcGVfbGltZXRvcnJlbnRzKHNvdXApOgogICAgIiIiRXh0cmFjdCB0aXRsZXMgYW5kIG1hZ25ldCBsaW5rcyBmcm9tIExpbWVUb3JyZW50cyBzZWFyY2ggcmVzdWx0cy4iIiIKICAgIHJlc3VsdHMgPSBbXQogICAgZm9yIGRpdiBpbiBzb3VwLnNlbGVjdCgiZGl2LnR0LW5hbWUiKToKICAgICAgICBhID0gZGl2LnNlbGVjdF9vbmUoImE6bGFzdC1vZi10eXBlIikKICAgICAgICBpZiBub3QgYToKICAgICAgICAgICAgY29udGludWUKICAgICAgICB0aXRsZSA9IGEuZ2V0X3RleHQoc3RyaXA9VHJ1ZSkKICAgICAgICBtYWduZXQgPSBOb25lCiAgICAgICAgIyBNYWduZXQgbGluayBpcyBvbiB0aGUgZGV0YWlsIHBhZ2UsIG5vdCBkaXJlY3RseSBvbiBzZWFyY2guIFdlJ2xsIHNraXAgZm9yIHNpbXBsaWNpdHkuCiAgICAgICAgIyBGb3IgYSBsaWdodHdlaWdodCBhcHByb2FjaCwgd2UgY2FuJ3QgbmF2aWdhdGUgdG8gZWFjaCBkZXRhaWwgcGFnZTsgc2tpcCBMaW1lVG9ycmVudHMuCiAgICAgICAgIyBCdXQgd2UnbGwgdHJ5IHRvIGZpbmQgYSBtYWduZXQgaW4gdGhlIHJvdyBhbnl3YXkgKG1heSBub3QgZXhpc3QpLgogICAgICAgIHBhcmVudF90ciA9IGRpdi5maW5kX3BhcmVudCgidHIiKQogICAgICAgIGlmIHBhcmVudF90cjoKICAgICAgICAgICAgbWFnbmV0X2EgPSBwYXJlbnRfdHIuc2VsZWN0X29uZSgiYVtocmVmXj0nbWFnbmV0J10iKQogICAgICAgICAgICBpZiBtYWduZXRfYToKICAgICAgICAgICAgICAgIG1hZ25ldCA9IG1hZ25ldF9hWydocmVmJ10KICAgICAgICBpZiB0aXRsZSBhbmQgbWFnbmV0OgogICAgICAgICAgICByZXN1bHRzLmFwcGVuZCgodGl0bGUsIG1hZ25ldCkpCiAgICByZXR1cm4gcmVzdWx0cwoKSFRNTF9TQ1JBUEVSUyA9IHsKICAgICJ0cGIiOiBzY3JhcGVfdHBiLAogICAgImxpbWV0b3JyZW50cyI6IHNjcmFwZV9saW1ldG9ycmVudHMsCn0KCiMgLS0tLS0tLS0tLSBGZXRjaGluZyBmdW5jdGlvbnMgLS0tLS0tLS0tLQpkZWYgZmV0Y2hfeG1sX3NvdXJjZShzb3VyY2UpOgogICAgdXJsID0gc291cmNlWyJ1cmwiXQogICAgaXRlbXMgPSBbXQogICAgcmVzcCA9IHJlcXVlc3RzLmdldCh1cmwsIHRpbWVvdXQ9RkVUQ0hfVElNRU9VVCwgaGVhZGVycz1IRUFERVJTKQogICAgcmVzcC5yYWlzZV9mb3Jfc3RhdHVzKCkKICAgIHJvb3QgPSBFVC5mcm9tc3RyaW5nKHJlc3AuY29udGVudCkKICAgIGZvciBpdGVtIGluIHJvb3QuZmluZGFsbCgiLi8vaXRlbSIpOgogICAgICAgIHRpdGxlID0gc291cmNlWyJ0aXRsZV9rZXkiXShpdGVtKQogICAgICAgIG1hZ25ldCA9IHNvdXJjZVsibWFnbmV0X2tleSJdKGl0ZW0pCiAgICAgICAgaWYgdGl0bGUgYW5kIG1hZ25ldCBhbmQgUVVFUlkgaW4gKHRpdGxlLmxvd2VyKCkgaWYgTkFNRV9PTkxZIGVsc2UgKHRpdGxlLmxvd2VyKCkgKyAiICIgKyAiIikpOgogICAgICAgICAgICBpdGVtcy5hcHBlbmQoKHRpdGxlLCBtYWduZXQsIHNvdXJjZVsibmFtZSJdKSkKICAgIHJldHVybiBpdGVtcwoKZGVmIGZldGNoX3Jzc19zb3VyY2Uoc291cmNlKToKICAgIHVybCA9IHNvdXJjZVsidXJsIl0KICAgIGl0ZW1zID0gW10KICAgIHJlc3AgPSByZXF1ZXN0cy5nZXQodXJsLCB0aW1lb3V0PUZFVENIX1RJTUVPVVQsIGhlYWRlcnM9SEVBREVSUykKICAgIHJlc3AucmFpc2VfZm9yX3N0YXR1cygpCiAgICBmZWVkID0gZmVlZHBhcnNlci5wYXJzZShyZXNwLmNvbnRlbnQpCiAgICBmb3IgZW50cnkgaW4gZmVlZC5lbnRyaWVzOgogICAgICAgIHRpdGxlID0gc291cmNlWyJ0aXRsZV9rZXkiXShlbnRyeSkKICAgICAgICBtYWduZXQgPSBzb3VyY2VbIm1hZ25ldF9rZXkiXShlbnRyeSkKICAgICAgICBpZiBub3QgbWFnbmV0OgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIGlmIG5vdCBtYWduZXQuc3RhcnRzd2l0aCgibWFnbmV0Iik6CiAgICAgICAgICAgICMgU29tZSBmZWVkcyBnaXZlIGFuIGhyZWYgdG8gYSAudG9ycmVudCBmaWxlOyB3ZSdsbCBzdGlsbCB1c2UgaXQgYXMgYSBsaW5rCiAgICAgICAgICAgIG1hZ25ldCA9IGYiaHR0cHM6e21hZ25ldH0iIGlmIG1hZ25ldC5zdGFydHN3aXRoKCIvLyIpIGVsc2UgbWFnbmV0CiAgICAgICAgaWYgdGl0bGUgYW5kIFFVRVJZIGluIHRpdGxlLmxvd2VyKCk6CiAgICAgICAgICAgIGl0ZW1zLmFwcGVuZCgodGl0bGUsIG1hZ25ldCwgc291cmNlWyJuYW1lIl0pKQogICAgcmV0dXJuIGl0ZW1zCgpkZWYgZmV0Y2hfaHRtbF9zb3VyY2Uoc291cmNlKToKICAgIHVybCA9IHNvdXJjZVsidXJsIl0KICAgIHNjcmFwZXJfbmFtZSA9IHNvdXJjZVsic2NyYXBlciJdCiAgICBzY3JhcGVyID0gSFRNTF9TQ1JBUEVSUy5nZXQoc2NyYXBlcl9uYW1lKQogICAgaWYgbm90IHNjcmFwZXI6CiAgICAgICAgcmV0dXJuIFtdCiAgICBpdGVtcyA9IFtdCiAgICByZXNwID0gcmVxdWVzdHMuZ2V0KHVybCwgdGltZW91dD1GRVRDSF9USU1FT1VULCBoZWFkZXJzPUhFQURFUlMpCiAgICByZXNwLnJhaXNlX2Zvcl9zdGF0dXMoKQogICAgc291cCA9IEJlYXV0aWZ1bFNvdXAocmVzcC50ZXh0LCAnaHRtbC5wYXJzZXInKQogICAgZm9yIHRpdGxlLCBtYWduZXQgaW4gc2NyYXBlcihzb3VwKToKICAgICAgICBpZiBRVUVSWSBpbiB0aXRsZS5sb3dlcigpOgogICAgICAgICAgICBpdGVtcy5hcHBlbmQoKHRpdGxlLCBtYWduZXQsIHNvdXJjZVsibmFtZSJdKSkKICAgIHJldHVybiBpdGVtcwoKZGVmIGZldGNoX3NvdXJjZShzb3VyY2UpOgogICAgcGFyc2VyID0gc291cmNlWyJwYXJzZXIiXQogICAgdHJ5OgogICAgICAgIGlmIHBhcnNlciA9PSAieG1sIjoKICAgICAgICAgICAgcmV0dXJuIGZldGNoX3htbF9zb3VyY2Uoc291cmNlKQogICAgICAgIGVsaWYgcGFyc2VyID09ICJyc3MiOgogICAgICAgICAgICByZXR1cm4gZmV0Y2hfcnNzX3NvdXJjZShzb3VyY2UpCiAgICAgICAgZWxpZiBwYXJzZXIgPT0gImh0bWwiOgogICAgICAgICAgICByZXR1cm4gZmV0Y2hfaHRtbF9zb3VyY2Uoc291cmNlKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIHJldHVybiBbXQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgICAgIHByaW50KGYi4pqg77iPIEZhaWxlZCB0byBmZXRjaCB7c291cmNlWyduYW1lJ119OiB7ZX0iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICAgICAgcmV0dXJuIFtdCgojIC0tLS0tLS0tLS0gTWFpbiAtLS0tLS0tLS0tCmRlZiBtYWluKCk6CiAgICBhbGxfcmVzdWx0cyA9IFtdCiAgICBwcmludCgi8J+MjSBGZXRjaGluZyBmcm9tIG11bHRpcGxlIHNvdXJjZXMuLi4iKQogICAgd2l0aCBUaHJlYWRQb29sRXhlY3V0b3IobWF4X3dvcmtlcnM9TUFYX1dPUktFUlMpIGFzIGV4ZWN1dG9yOgogICAgICAgIGZ1dHVyZV90b19zb3VyY2UgPSB7ZXhlY3V0b3Iuc3VibWl0KGZldGNoX3NvdXJjZSwgc3JjKTogc3JjIGZvciBzcmMgaW4gU09VUkNFU30KICAgICAgICBmb3IgZnV0dXJlIGluIGFzX2NvbXBsZXRlZChmdXR1cmVfdG9fc291cmNlKToKICAgICAgICAgICAgc3JjID0gZnV0dXJlX3RvX3NvdXJjZVtmdXR1cmVdCiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIGl0ZW1zID0gZnV0dXJlLnJlc3VsdCgpCiAgICAgICAgICAgICAgICBwcmludChmIuKchSB7c3JjWyduYW1lJ119OiB7bGVuKGl0ZW1zKX0gbWF0Y2hlcyIpCiAgICAgICAgICAgICAgICBhbGxfcmVzdWx0cy5leHRlbmQoaXRlbXMpCiAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToKICAgICAgICAgICAgICAgIHByaW50KGYi4p2MIHtzcmNbJ25hbWUnXX0gY3Jhc2hlZDoge2V9IikKCiAgICAjIERlZHVwbGljYXRlIGJ5IG1hZ25ldCBsaW5rCiAgICB1bmlxdWUgPSB7fQogICAgZm9yIHRpdGxlLCBtYWduZXQsIHNvdXJjZSBpbiBhbGxfcmVzdWx0czoKICAgICAgICBpZiBtYWduZXQgbm90IGluIHVuaXF1ZToKICAgICAgICAgICAgdW5pcXVlW21hZ25ldF0gPSAodGl0bGUsIHNvdXJjZSkKCiAgICAjIFNvcnQ6IEFjYWRlbWljIFRvcnJlbnRzIGZpcnN0LCB0aGVuIG90aGVycwogICAgZGVmIHNvcnRfa2V5KGl0ZW0pOgogICAgICAgIF8sIHNyYyA9IGl0ZW0KICAgICAgICByZXR1cm4gMCBpZiBzcmMgPT0gIkFjYWRlbWljVG9ycmVudHMiIGVsc2UgMQoKICAgIHNvcnRlZF9yZXN1bHRzID0gc29ydGVkKHVuaXF1ZS5pdGVtcygpLCBrZXk9bGFtYmRhIHg6IHNvcnRfa2V5KHgpKQogICAgc29ydGVkX3Jlc3VsdHMgPSBbKG0sIHQsIHMpIGZvciBtLCAodCwgcykgaW4gc29ydGVkX3Jlc3VsdHNdICAjIG1hZ25ldCwgdGl0bGUsIHNvdXJjZQoKICAgIGlmIG5vdCBzb3J0ZWRfcmVzdWx0czoKICAgICAgICBwcmludCgi4pqg77iPIE5vIG1hdGNoZXMgZm91bmQgYWNyb3NzIGFueSBzb3VyY2UuIikKICAgICAgICBzeXMuZXhpdCgwKQoKICAgIHByaW50KGYiXG7wn46vIFRvdGFsIHVuaXF1ZSBtYXRjaGVzOiB7bGVuKHNvcnRlZF9yZXN1bHRzKX0iKQoKICAgIHdpdGggb3BlbigicmVzdWx0cy50eHQiLCAidyIsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIGY6CiAgICAgICAgZm9yIG1hZ25ldCwgdGl0bGUsIHNvdXJjZSBpbiBzb3J0ZWRfcmVzdWx0c1s6TElNSVRdOgogICAgICAgICAgICBsaW5lID0gZiLwn5OMIFt7c291cmNlfV0ge3RpdGxlfVxuICAg8J+UlyB7bWFnbmV0fVxuLS0tIgogICAgICAgICAgICBwcmludChsaW5lKQogICAgICAgICAgICBmLndyaXRlKGxpbmUgKyAiXG4iKQoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIG1haW4oKQo="
+          echo "$ENCODED" | base64 -d > multi_search.py
+          chmod +x multi_search.py
+
+      - name: 🔎 Multi‑source search & build results
+        run: python3 multi_search.py
+        env:
+          QUERY: ${{ github.event.inputs.query }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          MATCH_NAME_ONLY: ${{ github.event.inputs.match_name_only }}
+
+      - name: 🚀 Force‑push results to orphan 'torrents' branch
         run: |
           set -euxo pipefail
-          mkdir -p feed_tests
+          BRANCH="torrents"
+          REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
-          # ──────────────────────────────────────────────
-          # 📋 List of RSS/XML feed URLs to test
-          #    Add / remove / modify as needed
-          # ──────────────────────────────────────────────
-          URLS=(
-            "https://academictorrents.com/database.xml"
-            "https://nyaa.si/?page=rss&q=test&c=0_0&f=0"
-            "https://1337x.to/cat/Movies/1/rss.xml"
-            "https://www.magnetdl.com/rss.xml?q=test"
-            "https://www.torlock.com/movies/rss.xml"
-            "https://eztvx.to/ezrss.xml"
-            # Add more candidate URLs below
-            # "https://example.com/somefeed.xml"
-          )
+          ORPHAN_DIR=$(mktemp -d)
+          cp results.txt "$ORPHAN_DIR/"
+          # Optionally keep the raw XML dump if the script saved it
+          if [ -f database.xml ]; then cp database.xml "$ORPHAN_DIR/"; fi
 
-          SUMMARY="feed_tests/summary.txt"
-          DETAIL_DIR="feed_tests/details"
-          mkdir -p "$DETAIL_DIR"
+          cd "$ORPHAN_DIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$REPO_URL"
 
-          echo "Testing ${#URLS[@]} feeds..." | tee "$SUMMARY"
-          echo "" | tee -a "$SUMMARY"
+          git add .
+          git commit -m "chore: update torrent search results [skip ci]" || {
+            echo "ℹ️ Nothing to commit"
+            exit 0
+          }
 
-          for url in "${URLS[@]}"; do
-            # Safe filename for the detail file
-            safe_name="$(echo "$url" | tr -c 'a-zA-Z0-9._-' '_' | cut -c1-80)"
-            detail_file="$DETAIL_DIR/${safe_name}.txt"
-
-            echo "──────────────────────────────────────"
-            echo "🌐 Testing: $url"
-
-            # 1. Get HTTP status code
-            set +e
-            http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-                        -L --max-time 15 \
-                        -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
-                        "$url" 2>/dev/null || echo "000")
-            set -e
-
-            echo "   HTTP status: $http_code"
-
-            # 2. If 2xx, download the first 500 bytes of the body
-            if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
-              curl -s --max-time 10 -L \
-                   -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
-                   "$url" | head -c 500 > "$detail_file"
-              content_size=$(wc -c < "$detail_file")
-              echo "✅ $url -> HTTP $http_code (saved $content_size bytes)" | tee -a "$SUMMARY"
-            else
-              echo "❌ $url -> HTTP $http_code" | tee -a "$SUMMARY"
-              # Still save a snippet if any content was returned (e.g., error page)
-              curl -s --max-time 10 -L \
-                   -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
-                   "$url" 2>/dev/null | head -c 200 > "$detail_file" || true
+          for attempt in 1 2 3; do
+            echo "🚀 Force‑push attempt $attempt to $BRANCH branch..."
+            if git push origin "HEAD:$BRANCH" --force; then
+              echo "✅ Push succeeded"
+              exit 0
             fi
+            echo "⚠️ Push failed, waiting 15 seconds..."
+            sleep 15
           done
+          echo "❌ Push failed after 3 attempts"
+          exit 1
 
-          echo "" | tee -a "$SUMMARY"
-          echo "Detailed first‑bytes dumps are in feed_tests/details/" | tee -a "$SUMMARY"
-
-      - name: 📤 Upload test results (always)
+      - name: 📤 Upload artifact (backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: feed-test-results
-          path: feed_tests/
+          name: torrent-search-results
+          path: results.txt
           retention-days: 7
