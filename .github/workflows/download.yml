@@ -33,6 +33,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: main
 
+      - name: 🧹 Cleanup stale temporary branches
+        run: |
+          set -euo pipefail
+          # Remove any leftover temp branch from a previous failed run of this same workflow run ID
+          git push origin --delete "torrent-downloads-tmp-${{ github.run_id }}" 2>/dev/null || true
+
       - name: 🔧 Install System Dependencies (with retry)
         run: |
           set -euo pipefail
@@ -52,14 +58,51 @@ jobs:
       - name: 🐍 Install Python API library
         run: pip install requests
 
+      - name: ⏳ Restore previous download state (resume)
+        id: resume
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/qbt-profile
+            /home/runner/downloads
+          key: torrent-resume-${{ github.run_id }}   # never match a previous save on restore
+          restore-keys: |
+            torrent-resume-
+
+      - name: 🧲 Magnet validation & early disk check
+        run: |
+          set -euo pipefail
+          CURRENT_MAGNET="${{ github.event.inputs.torrent_link }}"
+
+          # If cache was restored, check the magnet match
+          if [ -f /tmp/qbt-profile/magnet.txt ]; then
+            CACHED_MAGNET=$(cat /tmp/qbt-profile/magnet.txt)
+            if [ "$CACHED_MAGNET" != "$CURRENT_MAGNET" ]; then
+              echo "⚠️ Magnet mismatch – discarding cached data"
+              rm -rf /home/runner/downloads /tmp/qbt-profile
+            else
+              echo "✅ Magnet matches – will resume previous download"
+            fi
+          fi
+
+          # Quick disk space sanity: after restore, need at least 3 GB free
+          FREE_MB=$(df /home/runner --output=avail | tail -1 | awk '{print int($1/1024)}')
+          if [ $FREE_MB -lt 3072 ]; then
+            echo "⚠️ Low disk space ($FREE_MB MB) – discarding cached data"
+            rm -rf /home/runner/downloads /tmp/qbt-profile
+          fi
+
       - name: ⚙️ Start qBittorrent & capture temporary password
         id: start_qbt
         run: |
           set -euo pipefail
           QBT_PROFILE="/tmp/qbt-profile"
+          # Ensure profile directories exist even if not restored
           mkdir -p "$QBT_PROFILE/qBittorrent"
 
-          cat > "$QBT_PROFILE/qBittorrent/qBittorrent.conf" << 'EOF'
+          # Write config only if it doesn't exist (preserve cached config when resuming)
+          if [ ! -f "$QBT_PROFILE/qBittorrent/qBittorrent.conf" ]; then
+            cat > "$QBT_PROFILE/qBittorrent/qBittorrent.conf" << 'EOF'
           [Preferences]
           WebUI\Address=*
           WebUI\Port=8080
@@ -74,6 +117,7 @@ jobs:
           Session\DisableAutoCheckDownloaded=false
           Session\Preallocation=true
           EOF
+          fi
 
           echo "🟢 Starting qBittorrent..."
           qbittorrent-nox --profile="$QBT_PROFILE" --webui-port=8080 2>&1 > /tmp/qbt.log &
@@ -118,15 +162,19 @@ jobs:
               sys.exit(1)
           print("✅ Logged in")
 
-          # add magnet
+          # add magnet (qBittorrent will check for existing files automatically)
           r = session.post(f"{API}/torrents/add", data={"urls": MAGNET, "savepath": "/home/runner/downloads"})
           if r.status_code != 200:
               print("❌ Failed to add torrent", r.status_code)
               sys.exit(1)
           print("✅ Torrent added")
 
+          # store magnet for future cache validation
+          with open('/tmp/qbt-profile/magnet.txt', 'w') as f:
+              f.write(MAGNET)
+
           # monitor
-          TIMEOUT = 360*60 - 600   # stop a bit before job limit
+          TIMEOUT = 360*60 - 600   # stop a bit before job limit to allow cache save
           STALL_LIMIT = 10
           CHECK_INTERVAL = 60
           start_time = time.time()
@@ -155,7 +203,7 @@ jobs:
 
                   if state in ("uploading", "stalledUP", "pausedUP", "forcedUP") and amount_left == 0:
                       print("✅ Download complete!", flush=True)
-                      time.sleep(5)   # give qBittorrent a moment to finalise moves
+                      time.sleep(5)
                       break
 
                   if state in ("error", "missingFiles"):
@@ -172,8 +220,11 @@ jobs:
                       last_left = amount_left
 
                   if time.time() - start_time > TIMEOUT:
-                      print("⏰ Timeout", flush=True)
-                      sys.exit(1)
+                      print("⏰ Timeout – will attempt to save state for next run", flush=True)
+                      # Signal timeout to outer steps
+                      with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                          f.write('timeout=true\n')
+                      sys.exit(0)   # exit gracefully, not error
 
               except requests.ConnectionError:
                   print("⚠️ Connection lost", flush=True)
@@ -186,15 +237,46 @@ jobs:
         run: |
           kill ${{ steps.start_qbt.outputs.qbt_pid }} 2>/dev/null || true
 
-      - name: 💽 Disk space check & prepare download folder
+      - name: 💾 Save download state for future resume (on timeout/failure)
+        if: failure() || cancelled() || steps.monitor.outputs.timeout == 'true'
         run: |
           set -euo pipefail
           DL_DIR="/home/runner/downloads"
           if [ ! -d "$DL_DIR" ] || [ -z "$(ls -A "$DL_DIR" 2>/dev/null)" ]; then
-            echo "❌ No downloaded files found in $DL_DIR"
+            echo "No data to cache"
+            exit 0
+          fi
+          CONTENT_SIZE=$(du -sb "$DL_DIR" | cut -f1)
+          CONTENT_MB=$((CONTENT_SIZE / 1048576))
+          MAX_CACHE_MB=8000   # 8 GB limit to stay safe below 10 GB
+          if [ $CONTENT_MB -gt $MAX_CACHE_MB ]; then
+            echo "⚠️ Data too large for cache ($CONTENT_MB MB) – skipping state save"
+            exit 0
+          fi
+          echo "Caching download state (${CONTENT_MB} MB) for next run..."
+          echo "state_saved=true" >> $GITHUB_OUTPUT
+        id: save_state_flag
+
+      - name: 📦 Save cache (state)
+        if: steps.save_state_flag.outputs.state_saved == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /tmp/qbt-profile
+            /home/runner/downloads
+          key: torrent-resume-${{ github.run_id }}
+
+      - name: 📊 Check if download completed before packaging
+        run: |
+          if [ ! -d /home/runner/downloads ] || [ -z "$(ls -A /home/runner/downloads 2>/dev/null)" ]; then
+            echo "❌ No download data – did the torrent fail or timeout? Exiting."
             exit 1
           fi
 
+      - name: 💽 Disk space check & prepare download folder
+        run: |
+          set -euo pipefail
+          DL_DIR="/home/runner/downloads"
           CONTENT_SIZE=$(du -sb "$DL_DIR" | cut -f1)
           AVAILABLE_KB=$(df /home/runner | awk 'NR==2 {print $4}')
           AVAILABLE_BYTES=$((AVAILABLE_KB * 1024))
@@ -231,16 +313,13 @@ jobs:
           echo "📂 Final delivery contents:"
           ls -lh "$DELIVER_DIR"
 
-      - name: 🚀 Batched Push to Orphan 'torrent-downloads' Branch
+      - name: 🚀 Batched Push to Temporary Branch
         run: |
           set -euo pipefail
-          BRANCH="torrent-downloads"
+          TEMP_BRANCH="torrent-downloads-tmp-${{ github.run_id }}"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           DELIVER_DIR="./deliver"
           BATCH_SIZE=5
-
-          # Delete remote branch so we start fresh
-          git push origin --delete "$BRANCH" 2>/dev/null || true
 
           ORPHAN_DIR=$(mktemp -d)
           cp "$DELIVER_DIR"/* "$ORPHAN_DIR/"
@@ -250,7 +329,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add origin "$REPO_URL"
 
-          # Split files into batches
           mapfile -t FILES < <(ls -1)
           TOTAL=${#FILES[@]}
           FIRST=0
@@ -262,23 +340,28 @@ jobs:
             COMMIT_MSG="chore: torrent download part $((COMMIT_COUNT+1)) [skip ci]"
             git commit -m "$COMMIT_MSG" || { echo "ℹ️ Nothing to commit (batch empty)"; break; }
             COMMIT_COUNT=$((COMMIT_COUNT+1))
-            echo "🚀 Pushing batch $COMMIT_COUNT (${#BATCH[@]} files)..."
+            echo "🚀 Pushing batch $COMMIT_COUNT (${#BATCH[@]} files) to temp branch..."
             for attempt in 1 2 3; do
               if [ $COMMIT_COUNT -eq 1 ]; then
-                # first commit: force push to create branch
-                git push origin "HEAD:$BRANCH" --force && break
+                git push origin "HEAD:$TEMP_BRANCH" --force && break
               else
-                git push origin "HEAD:$BRANCH" && break
+                git push origin "HEAD:$TEMP_BRANCH" && break
               fi
               echo "⚠️ Push attempt $attempt failed, waiting 15s..."
               sleep 15
             done
             FIRST=$((FIRST + BATCH_SIZE))
           done
+          echo "✅ All batches pushed to $TEMP_BRANCH"
 
-          echo "✅ All batches pushed successfully"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 🔀 Promote Temporary Branch to Real Branch
+        run: |
+          TEMP_BRANCH="torrent-downloads-tmp-${{ github.run_id }}"
+          REAL_BRANCH="torrent-downloads"
+          echo "🔀 Promoting $TEMP_BRANCH → $REAL_BRANCH"
+          git push origin "+refs/heads/$TEMP_BRANCH:refs/heads/$REAL_BRANCH"
+          git push origin --delete "$TEMP_BRANCH"
+          echo "✅ Real branch updated, temp branch deleted"
 
       - name: ☁️ Upload to Gofile (optional)
         if: ${{ github.event.inputs.upload_to_gofile == 'true' }}
