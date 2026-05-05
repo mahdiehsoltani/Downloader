@@ -36,7 +36,6 @@ jobs:
       - name: 🧹 Cleanup stale temporary branches
         run: |
           set -euo pipefail
-          # Remove any leftover temp branch from a previous failed run of this same workflow run ID
           git push origin --delete "torrent-downloads-tmp-${{ github.run_id }}" 2>/dev/null || true
 
       - name: 🔧 Install System Dependencies (with retry)
@@ -65,7 +64,7 @@ jobs:
           path: |
             /tmp/qbt-profile
             /home/runner/downloads
-          key: torrent-resume-${{ github.run_id }}   # never match a previous save on restore
+          key: torrent-resume-${{ github.run_id }}
           restore-keys: |
             torrent-resume-
 
@@ -74,7 +73,6 @@ jobs:
           set -euo pipefail
           CURRENT_MAGNET="${{ github.event.inputs.torrent_link }}"
 
-          # If cache was restored, check the magnet match
           if [ -f /tmp/qbt-profile/magnet.txt ]; then
             CACHED_MAGNET=$(cat /tmp/qbt-profile/magnet.txt)
             if [ "$CACHED_MAGNET" != "$CURRENT_MAGNET" ]; then
@@ -85,7 +83,6 @@ jobs:
             fi
           fi
 
-          # Quick disk space sanity: after restore, need at least 3 GB free
           FREE_MB=$(df /home/runner --output=avail | tail -1 | awk '{print int($1/1024)}')
           if [ $FREE_MB -lt 3072 ]; then
             echo "⚠️ Low disk space ($FREE_MB MB) – discarding cached data"
@@ -97,10 +94,8 @@ jobs:
         run: |
           set -euo pipefail
           QBT_PROFILE="/tmp/qbt-profile"
-          # Ensure profile directories exist even if not restored
           mkdir -p "$QBT_PROFILE/qBittorrent"
 
-          # Write config only if it doesn't exist (preserve cached config when resuming)
           if [ ! -f "$QBT_PROFILE/qBittorrent/qBittorrent.conf" ]; then
             cat > "$QBT_PROFILE/qBittorrent/qBittorrent.conf" << 'EOF'
           [Preferences]
@@ -155,26 +150,22 @@ jobs:
           API = "http://127.0.0.1:8080/api/v2"
 
           session = requests.Session()
-          # login
           r = session.post(f"{API}/auth/login", data={"username": "admin", "password": PASSWORD})
           if r.status_code != 200:
               print("❌ Login failed", r.status_code)
               sys.exit(1)
           print("✅ Logged in")
 
-          # add magnet (qBittorrent will check for existing files automatically)
           r = session.post(f"{API}/torrents/add", data={"urls": MAGNET, "savepath": "/home/runner/downloads"})
           if r.status_code != 200:
               print("❌ Failed to add torrent", r.status_code)
               sys.exit(1)
           print("✅ Torrent added")
 
-          # store magnet for future cache validation
           with open('/tmp/qbt-profile/magnet.txt', 'w') as f:
               f.write(MAGNET)
 
-          # monitor
-          TIMEOUT = 360*60 - 600   # stop a bit before job limit to allow cache save
+          TIMEOUT = 360*60 - 600
           STALL_LIMIT = 10
           CHECK_INTERVAL = 60
           start_time = time.time()
@@ -221,10 +212,9 @@ jobs:
 
                   if time.time() - start_time > TIMEOUT:
                       print("⏰ Timeout – will attempt to save state for next run", flush=True)
-                      # Signal timeout to outer steps
                       with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                           f.write('timeout=true\n')
-                      sys.exit(0)   # exit gracefully, not error
+                      sys.exit(0)
 
               except requests.ConnectionError:
                   print("⚠️ Connection lost", flush=True)
@@ -248,7 +238,7 @@ jobs:
           fi
           CONTENT_SIZE=$(du -sb "$DL_DIR" | cut -f1)
           CONTENT_MB=$((CONTENT_SIZE / 1048576))
-          MAX_CACHE_MB=8000   # 8 GB limit to stay safe below 10 GB
+          MAX_CACHE_MB=8000
           if [ $CONTENT_MB -gt $MAX_CACHE_MB ]; then
             echo "⚠️ Data too large for cache ($CONTENT_MB MB) – skipping state save"
             exit 0
@@ -313,10 +303,11 @@ jobs:
           echo "📂 Final delivery contents:"
           ls -lh "$DELIVER_DIR"
 
-      - name: 🚀 Batched Push to Temporary Branch
+      - name: 🚀 Batched Push to Temporary Branch & Promote
         run: |
           set -euo pipefail
           TEMP_BRANCH="torrent-downloads-tmp-${{ github.run_id }}"
+          REAL_BRANCH="torrent-downloads"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           DELIVER_DIR="./deliver"
           BATCH_SIZE=5
@@ -352,14 +343,10 @@ jobs:
             done
             FIRST=$((FIRST + BATCH_SIZE))
           done
-          echo "✅ All batches pushed to $TEMP_BRANCH"
 
-      - name: 🔀 Promote Temporary Branch to Real Branch
-        run: |
-          TEMP_BRANCH="torrent-downloads-tmp-${{ github.run_id }}"
-          REAL_BRANCH="torrent-downloads"
+          # Promote directly from here
           echo "🔀 Promoting $TEMP_BRANCH → $REAL_BRANCH"
-          git push origin "+refs/heads/$TEMP_BRANCH:refs/heads/$REAL_BRANCH"
+          git push origin "+HEAD:refs/heads/$REAL_BRANCH"
           git push origin --delete "$TEMP_BRANCH"
           echo "✅ Real branch updated, temp branch deleted"
 
