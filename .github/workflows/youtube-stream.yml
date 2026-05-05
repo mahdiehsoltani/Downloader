@@ -1,0 +1,738 @@
+name: 🎬 YouTube HLS Streamer
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '🎬 YouTube Video URL'
+        required: true
+        type: string
+      type:
+        description: '📦 Output Type'
+        required: true
+        type: choice
+        options:
+          - video
+          - audio
+        default: 'video'
+      quality:
+        description: '🎚️ Quality (video: 144p/360p/480p/720p/1080p | audio: 64kbps/128kbps/192kbps/320kbps)'
+        required: false
+        type: string
+        default: '720p'
+
+jobs:
+  stream:
+    name: 🎬 HLS Stream
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: 📂 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: 💾 Restore cached pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('.github/workflows/youtube-stream.yml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: 🔧 Install Dependencies
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "🔄 apt-get attempt $i..."
+            sudo apt-get update && sudo apt-get install -y curl jq ffmpeg python3-pip && break || sleep 10
+          done
+          pip install --cache-dir ~/.cache/pip requests
+
+      - name: 🎯 Request Conversion & Gather Metadata
+        id: converter
+        run: |
+          set -euo pipefail
+          python3 << 'PYEOF'
+          import os, sys, json, time, re
+          import requests
+
+          YT_URL = os.environ['YT_URL']
+          OUTPUT_TYPE = os.environ['OUTPUT_TYPE']
+          QUALITY = os.environ.get('QUALITY', '720p')
+          RUN_ID = os.environ['GITHUB_RUN_ID']
+
+          API_ENDPOINT = "https://hub.ytconvert.org/api/download"
+          STATUS_CHECK_INTERVAL = 2
+          MAX_ATTEMPTS = 150
+          RETRY_MAX = 3
+
+          VIDEO_QUALITIES = ['144p', '360p', '480p', '720p', '1080p']
+          AUDIO_BITRATES = ['64kbps', '128kbps', '192kbps', '320kbps']
+
+          def safe_json(resp):
+              try:
+                  return resp.json()
+              except Exception:
+                  print(f"❌ Non-JSON response (HTTP {resp.status_code}): {resp.text[:300]}")
+                  sys.exit(1)
+
+          def retryable_request(method, url, session, **kwargs):
+              last_exc = None
+              for i in range(RETRY_MAX):
+                  try:
+                      resp = session.request(method, url, timeout=30, **kwargs)
+                      if resp.status_code < 500 and resp.status_code != 429:
+                          return resp
+                      print(f"⚠️ Retryable status {resp.status_code} – attempt {i+1}/{RETRY_MAX}")
+                  except requests.RequestException as e:
+                      last_exc = e
+                      print(f"⚠️ Request error, retry {i+1}/{RETRY_MAX}: {e}")
+                  time.sleep((2 ** i) * 1.5)
+              if last_exc:
+                  raise last_exc
+              return resp
+
+          def normalize_quality(output_type, quality_input):
+              try:
+                  quality = quality_input.lower().strip()
+                  quality_map = {'4k':'1080p','2k':'1080p','2160p':'1080p','1440p':'1080p','240p':'360p'}
+                  if output_type == 'audio':
+                      quality = quality.replace('p', '')
+                      if 'kbps' not in quality:
+                          quality = quality.rstrip('k') + 'kbps' if quality.endswith('k') else quality + 'kbps'
+                      if quality in AUDIO_BITRATES:
+                          return quality
+                      try:
+                          num = int(''.join(filter(str.isdigit, quality)))
+                          best = min(AUDIO_BITRATES, key=lambda b: abs(int(''.join(filter(str.isdigit, b))) - num))
+                      except:
+                          best = '192kbps'
+                      print(f"🔄 Audio fallback from '{quality_input}' → {best}")
+                      return best
+                  else:
+                      if quality in quality_map:
+                          return quality_map[quality]
+                      quality = quality.replace('k', '')
+                      if not quality.endswith('p'):
+                          quality += 'p'
+                      if quality in VIDEO_QUALITIES:
+                          return quality
+                      if quality in quality_map:
+                          return quality_map[quality]
+                      print(f"🔄 Video fallback from '{quality_input}' → 720p")
+                      return '720p'
+              except Exception:
+                  return '720p' if output_type == 'video' else '192kbps'
+
+          if OUTPUT_TYPE not in ('video', 'audio'):
+              print(f"⚠️ Unknown type '{OUTPUT_TYPE}', forcing to video")
+              OUTPUT_TYPE = 'video'
+
+          QUALITY = normalize_quality(OUTPUT_TYPE, QUALITY)
+
+          print(f"🎯 Target: {OUTPUT_TYPE.upper()} @ {QUALITY}")
+          print("="*50)
+
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
+              "Accept": "application/json",
+              "Referer": "https://media.ytmp3.gg/",
+              "Content-Type": "application/json",
+              "Origin": "https://media.ytmp3.gg",
+          }
+
+          session = requests.Session()
+
+          try:
+              session.get("https://media.ytmp3.gg/", headers=HEADERS, timeout=15)
+          except requests.RequestException as e:
+              print(f"❌ Preflight failed: {e}")
+              sys.exit(1)
+
+          payload = {
+              "url": YT_URL,
+              "os": "linux",
+              "output": {
+                  "type": OUTPUT_TYPE,
+                  "format": "mp3" if OUTPUT_TYPE == 'audio' else "mp4",
+              }
+          }
+          if OUTPUT_TYPE == 'audio':
+              payload["audio"] = {"bitrate": QUALITY}
+          else:
+              payload["output"]["quality"] = QUALITY
+
+          print(f"📤 Requesting conversion...")
+          print(f"📋 Payload: {json.dumps(payload, indent=2)}")
+
+          try:
+              response = retryable_request("POST", API_ENDPOINT, session, json=payload, headers=HEADERS)
+              if response.status_code != 200:
+                  print(f"❌ API error ({response.status_code}): {response.text[:300]}")
+                  if response.status_code == 400:
+                      if OUTPUT_TYPE == 'audio':
+                          payload["audio"]["bitrate"] = "192kbps"
+                      else:
+                          payload["output"]["quality"] = "720p"
+                      response = session.post(API_ENDPOINT, json=payload, headers=HEADERS, timeout=30)
+                      if response.status_code != 200:
+                          print(f"❌ Fallback also failed ({response.status_code})")
+                          sys.exit(1)
+                  else:
+                      sys.exit(1)
+              data = safe_json(response)
+          except requests.RequestException as e:
+              print(f"❌ Request failed: {e}")
+              sys.exit(1)
+
+          status_url = data.get('statusUrl')
+          title = data.get('title', 'youtube_video')
+          if not status_url:
+              print("❌ No statusUrl in response")
+              print(json.dumps(data, indent=2))
+              sys.exit(1)
+
+          print(f"✅ Registered: {title}")
+          print("="*50)
+
+          download_url = None
+          last_progress = -1
+          stall_count = 0
+          attempt = 0
+          max_attempts = MAX_ATTEMPTS
+          subtitle_url = None
+
+          while attempt < max_attempts:
+              attempt += 1
+              time.sleep(STATUS_CHECK_INTERVAL)
+              print(f"🔄 Status [{attempt}/{max_attempts}]...", end=' ')
+              try:
+                  status_resp = session.get(status_url, headers=HEADERS, timeout=15)
+                  status_data = safe_json(status_resp)
+              except requests.RequestException as e:
+                  print(f"⚠️ check failed: {e}")
+                  continue
+
+              status = status_data.get('status')
+              progress = status_data.get('progress', 0)
+              print(f"{status} | {progress}%")
+
+              # Look for subtitles early
+              if not subtitle_url and status_data.get('subtitles'):
+                  subtitle_url = status_data['subtitles']
+                  print("📝 Subtitle URL found")
+
+              if status == 'completed':
+                  download_url = status_data.get('downloadUrl')
+                  if download_url:
+                      print("🎉 Completed successfully!")
+                      # final subtitle check in completed response
+                      if status_data.get('subtitles'):
+                          subtitle_url = status_data['subtitles']
+                  break
+              elif status in ('failed', 'error'):
+                  print(f"❌ Conversion {status}: " + json.dumps(status_data.get('error', {})))
+                  sys.exit(1)
+              elif status not in ('pending', 'processing'):
+                  print(f"❌ Unexpected status '{status}' – aborting")
+                  sys.exit(1)
+
+              if progress > last_progress:
+                  last_progress = progress
+                  stall_count = 0
+                  if attempt >= max_attempts - 5 and max_attempts < 300:
+                      max_attempts += 30
+                      print(f"   ↳ Progress still climbing, extended limit to {max_attempts}")
+              else:
+                  stall_count += 1
+                  if stall_count >= 10:
+                      print("⏰ Progress stalled for 10 checks – aborting")
+                      sys.exit(1)
+
+          if not download_url:
+              print("⏰ Conversion did not complete in time")
+              sys.exit(1)
+
+          # Filename
+          video_id_match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', YT_URL)
+          video_id = video_id_match.group(1) if video_id_match else "unknown"
+          safe_title = re.sub(r'[^a-zA-Z0-9\-_]', '_', title.replace(' ', '_'))[:60].strip('_') or video_id
+          timestamp = time.strftime("%Y%m%d-%H%M%S")
+          ext = "mp3" if OUTPUT_TYPE == 'audio' else "mp4"
+          quality_label = QUALITY
+          filename = f"{safe_title}_{video_id}_{quality_label}_{timestamp}.{ext}"
+
+          with open('/tmp/metadata.txt', 'w', encoding='utf-8') as f:
+              f.write(f"{download_url}\n{filename}\n{OUTPUT_TYPE}\n{QUALITY}\n{status_url}\n")
+              if subtitle_url:
+                  f.write(f"{subtitle_url}\n")
+              else:
+                  f.write("NONE\n")
+
+          print(f"📥 Download URL: {download_url[:80]}...")
+          print(f"📄 Filename: {filename}")
+          if subtitle_url:
+              print(f"📝 Subtitle URL: {subtitle_url}")
+          else:
+              print("📝 No subtitles available")
+          print(f"🏷️  Run ID: {RUN_ID}")
+          PYEOF
+        env:
+          YT_URL: ${{ github.event.inputs.url }}
+          OUTPUT_TYPE: ${{ github.event.inputs.type }}
+          QUALITY: ${{ github.event.inputs.quality }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+
+      - name: 💾 Disk Space Check
+        run: |
+          AVAIL_KB=$(df /home/runner | awk 'NR==2 {print $4}')
+          AVAIL_MB=$((AVAIL_KB / 1024))
+          echo "📀 Available space: ${AVAIL_MB} MB"
+          if [[ $AVAIL_MB -lt 3072 ]]; then
+            echo "❌ Less than 3 GB free, aborting"
+            exit 1
+          fi
+
+      - name: ⬇️ Download Media File
+        id: download
+        run: |
+          set -euo pipefail
+          DOWNLOAD_URL=$(sed -n '1p' /tmp/metadata.txt)
+          FILENAME=$(sed -n '2p' /tmp/metadata.txt)
+          OUTPUT_TYPE=$(sed -n '3p' /tmp/metadata.txt)
+          STATUS_URL=$(sed -n '5p' /tmp/metadata.txt)
+
+          TEMP_DIR="./downloads/temp"
+          mkdir -p "$TEMP_DIR"
+
+          echo "⬇️ Downloading $OUTPUT_TYPE ..."
+          echo "📄 File: $FILENAME"
+
+          EXPECTED_SIZE=$(curl -sI -L "$DOWNLOAD_URL" | grep -i content-length | awk 'END{print $2}' | tr -d '\r')
+          if [[ -n "$EXPECTED_SIZE" ]]; then
+            EXPECTED_MB=$((EXPECTED_SIZE / 1048576))
+            echo "📏 Expected size: ${EXPECTED_MB} MB"
+            TIMEOUT=900
+          else
+            TIMEOUT=600
+          fi
+
+          download_file() {
+            local url="$1" output="$2"
+            curl -sS -w "%{http_code}" -L \
+              --fail --speed-limit 1024 --speed-time 30 \
+              -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0" \
+              -H "Referer: https://media.ytmp3.gg/" \
+              -o "$output" --max-time "$TIMEOUT" "$url"
+          }
+
+          HTTP_CODE=$(download_file "$DOWNLOAD_URL" "$TEMP_DIR/$FILENAME")
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "⚠️ First attempt HTTP $HTTP_CODE – refreshing token..."
+            FRESH_URL=$(curl -sS -L \
+              -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0" \
+              -H "Accept: application/json" "$STATUS_URL" | jq -r '.downloadUrl // empty')
+            if [[ -n "$FRESH_URL" && "$FRESH_URL" != "null" ]]; then
+              echo "🔄 Got fresh URL, retrying..."
+              HTTP_CODE=$(download_file "$FRESH_URL" "$TEMP_DIR/$FILENAME")
+            fi
+          fi
+
+          if [[ "$HTTP_CODE" != "200" ]]; then
+            echo "❌ Download failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$TEMP_DIR/$FILENAME")
+          FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+          if [[ $FILE_SIZE -lt 10240 ]]; then
+            echo "❌ File too small (${FILE_SIZE_MB} MB)"
+            exit 1
+          fi
+          echo "📏 Size: ${FILE_SIZE_MB} MB"
+
+          echo "🔍 Verifying media integrity..."
+          ffprobe -v error -show_entries stream=codec_type,duration \
+            -of default=noprint_wrappers=1 "$TEMP_DIR/$FILENAME" > /tmp/ffprobe.txt 2>&1 || true
+          if ! grep -q "codec_type" /tmp/ffprobe.txt; then
+            echo "❌ No valid streams"
+            cat /tmp/ffprobe.txt
+            exit 1
+          fi
+          DURATION=$(grep -oP 'duration=\K[0-9.]+' /tmp/ffprobe.txt | head -1)
+          if [[ -n "$DURATION" ]] && (( $(echo "$DURATION < 0.5" | bc -l) )); then
+            echo "❌ Media too short (<0.5s)"
+            exit 1
+          fi
+          echo "✅ Media integrity OK (duration: ${DURATION:-unknown}s)"
+
+      - name: 🎬 Process Video to HLS
+        if: ${{ github.event.inputs.type == 'video' }}
+        run: |
+          set -euo pipefail
+          TEMP_DIR="./downloads/temp"
+          FILENAME=$(sed -n '2p' /tmp/metadata.txt)
+          INPUT_FILE="$TEMP_DIR/$FILENAME"
+          SUBTITLE_LINE=$(sed -n '6p' /tmp/metadata.txt 2>/dev/null || echo "NONE")
+          SEGMENT_DIR="/tmp/hls"
+          mkdir -p "$SEGMENT_DIR"
+
+          # Download subtitles if available
+          SUBTITLE_FILE=""
+          if [[ "$SUBTITLE_LINE" != "NONE" && -n "$SUBTITLE_LINE" ]]; then
+            echo "📝 Downloading subtitles..."
+            curl -sS -L -o /tmp/subtitle_raw "$SUBTITLE_LINE"
+            # Convert to VTT if needed (assume .srt or .vtt)
+            ffmpeg -y -i /tmp/subtitle_raw -f webvtt /tmp/subtitles.vtt 2>/dev/null || true
+            if [ -f /tmp/subtitles.vtt ]; then
+              SUBTITLE_FILE="/tmp/subtitles.vtt"
+              echo "✅ Subtitles converted to VTT"
+            else
+              echo "⚠️ Subtitle conversion failed, proceeding without"
+            fi
+          else
+            echo "📝 No subtitles available"
+          fi
+
+          # Segment video into HLS
+          echo "✂️ Segmenting video..."
+          if [ -n "$SUBTITLE_FILE" ]; then
+            # Include subtitles as a separate track
+            ffmpeg -y -i "$INPUT_FILE" -i "$SUBTITLE_FILE" \
+              -c:v copy -c:a copy -c:s webvtt \
+              -f hls -hls_time 10 -hls_list_size 0 \
+              -hls_segment_filename "$SEGMENT_DIR/segment_%03d.ts" \
+              -var_stream_map "v:0,a:0,s:0" \
+              -master_pl_name master.m3u8 \
+              "$SEGMENT_DIR/playlist.m3u8"
+          else
+            ffmpeg -y -i "$INPUT_FILE" \
+              -c copy -f hls -hls_time 10 -hls_list_size 0 \
+              -hls_segment_filename "$SEGMENT_DIR/segment_%03d.ts" \
+              "$SEGMENT_DIR/playlist.m3u8"
+          fi
+
+          rm -f "$INPUT_FILE"
+          echo "✅ Segmentation complete"
+          echo "segments_dir=$SEGMENT_DIR" >> $GITHUB_OUTPUT
+          echo "has_subtitles=$( [[ -n "$SUBTITLE_FILE" ]] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+
+      - name: 🎵 Process Audio (single file)
+        if: ${{ github.event.inputs.type == 'audio' }}
+        run: |
+          TEMP_DIR="./downloads/temp"
+          FILENAME=$(sed -n '2p' /tmp/metadata.txt)
+          mkdir -p /tmp/audio
+          cp "$TEMP_DIR/$FILENAME" /tmp/audio/audio.mp3
+          rm -f "$TEMP_DIR/$FILENAME"
+          echo "audio_dir=/tmp/audio" >> $GITHUB_OUTPUT
+
+      - name: 🔗 Rewrite Playlist with Raw URLs (video only)
+        if: ${{ github.event.inputs.type == 'video' }}
+        run: |
+          SEGMENT_DIR="/tmp/hls"
+          REPO="${{ github.repository }}"
+          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
+
+          # Rewrite master playlist if exists, else the single playlist
+          if [ -f "$SEGMENT_DIR/master.m3u8" ]; then
+            sed -i "s|playlist.m3u8|${BASE_URL}/playlist.m3u8|g" "$SEGMENT_DIR/master.m3u8"
+            sed -i "s|subtitle_eng.m3u8|${BASE_URL}/subtitle_eng.m3u8|g" "$SEGMENT_DIR/master.m3u8"  # adjust as needed
+          fi
+
+          # Rewrite segment playlist(s)
+          for pl in "$SEGMENT_DIR"/*.m3u8; do
+            sed -i "s|segment_|${BASE_URL}/segment_|g" "$pl"
+          done
+
+          echo "✅ Playlist rewritten"
+
+      - name: 🎨 Generate Player HTML (video)
+        if: ${{ github.event.inputs.type == 'video' }}
+        run: |
+          REPO="${{ github.repository }}"
+          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
+          PLAYLIST_URL="${BASE_URL}/master.m3u8"
+          if [[ "${{ steps.download.outputs.has_subtitles }}" != "true" ]]; then
+              PLAYLIST_URL="${BASE_URL}/playlist.m3u8"
+          fi
+
+          cat > /tmp/player.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>YouTube HLS Player</title>
+          <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+          <style>
+            * { margin:0; padding:0; box-sizing:border-box; }
+            body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }
+            .player-container { width:100%; max-width:960px; position:relative; background:#000; border-radius:8px; overflow:hidden; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
+            video { width:100%; display:block; background:#000; }
+            .controls { position:absolute; bottom:0; left:0; right:0; background:linear-gradient(transparent, rgba(0,0,0,0.8)); padding:40px 16px 16px; transition:opacity 0.3s; }
+            .controls.hidden { opacity:0; pointer-events:none; }
+            .progress-bar { width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; cursor:pointer; margin-bottom:12px; }
+            .progress-fill { height:100%; background:#ff3b30; border-radius:2px; width:0%; transition:width 0.1s linear; }
+            .row { display:flex; align-items:center; gap:12px; color:#fff; }
+            button { background:transparent; border:none; color:#fff; cursor:pointer; font-size:20px; padding:4px 8px; border-radius:4px; transition:background 0.2s; }
+            button:hover { background:rgba(255,255,255,0.1); }
+            .time { font-size:13px; }
+            .volume-slider { width:80px; }
+            .speed-select { background:rgba(255,255,255,0.1); border:none; color:#fff; padding:2px 6px; border-radius:4px; }
+            .download-btn { background:#ff3b30; color:#fff; font-size:14px; padding:6px 12px; border-radius:4px; cursor:pointer; }
+            .download-btn:disabled { opacity:0.5; cursor:not-allowed; }
+            .overlay { position:absolute; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.4); cursor:pointer; z-index:2; }
+            .overlay-btn { font-size:48px; color:#fff; }
+            .spinner { border:4px solid rgba(255,255,255,0.3); border-top-color:#ff3b30; border-radius:50%; width:40px; height:40px; animation:spin 1s linear infinite; }
+            @keyframes spin { to { transform:rotate(360deg); } }
+            .download-progress { width:100%; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; margin-top:8px; display:none; }
+            .download-fill { height:100%; background:#ff3b30; width:0%; }
+          </style>
+          </head>
+          <body>
+          <div class="player-container">
+            <video id="video" crossorigin="anonymous"></video>
+            <div class="overlay" id="playOverlay" onclick="playVideo()">
+              <div class="overlay-btn">▶</div>
+            </div>
+            <div class="controls hidden" id="controls">
+              <div class="progress-bar" id="progressBar" onmousedown="seek(event)">
+                <div class="progress-fill" id="progressFill"></div>
+              </div>
+              <div class="row">
+                <button onclick="togglePlay()" id="playBtn">▶</button>
+                <span class="time" id="timeDisplay">0:00 / 0:00</span>
+                <button onclick="muteToggle()">🔊</button>
+                <input type="range" class="volume-slider" min="0" max="100" value="100" oninput="setVolume(this.value)">
+                <select class="speed-select" onchange="setSpeed(this.value)">
+                  <option value="0.5">0.5x</option>
+                  <option value="0.75">0.75x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="2">2x</option>
+                </select>
+                <button onclick="toggleFullscreen()">⛶</button>
+                <button class="download-btn" onclick="downloadVideo()">⬇ Download</button>
+              </div>
+              <div class="download-progress" id="downloadProgress">
+                <div class="download-fill" id="downloadFill"></div>
+              </div>
+            </div>
+          </div>
+
+          <script>
+          const video = document.getElementById('video');
+          const playOverlay = document.getElementById('playOverlay');
+          const controls = document.getElementById('controls');
+          const playBtn = document.getElementById('playBtn');
+          const progressBar = document.getElementById('progressBar');
+          const progressFill = document.getElementById('progressFill');
+          const timeDisplay = document.getElementById('timeDisplay');
+          const downloadProgress = document.getElementById('downloadProgress');
+          const downloadFill = document.getElementById('downloadFill');
+
+          let hls;
+
+          function initPlayer() {
+            if (Hls.isSupported()) {
+              hls = new Hls({ debug: false });
+              hls.loadSource('${PLAYLIST_URL}');
+              hls.attachMedia(video);
+              hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                console.log('HLS manifest loaded');
+                hideSpinner();
+              });
+              hls.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) {
+                  console.error('HLS fatal error', data);
+                  alert('Playback error. Please try again later.');
+                }
+              });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+              video.src = '${PLAYLIST_URL}';
+            } else {
+              alert('Your browser does not support HLS playback.');
+            }
+          }
+
+          function hideSpinner() {
+            const overlay = playOverlay;
+            if (overlay) overlay.innerHTML = '<div class="overlay-btn">▶</div>';
+          }
+
+          function playVideo() {
+            video.play();
+            playOverlay.style.display = 'none';
+            controls.classList.remove('hidden');
+          }
+
+          function togglePlay() {
+            if (video.paused) { video.play(); playBtn.textContent = '⏸'; }
+            else { video.pause(); playBtn.textContent = '▶'; }
+          }
+
+          video.addEventListener('timeupdate', () => {
+            const pct = (video.currentTime / video.duration) * 100;
+            progressFill.style.width = pct + '%';
+            timeDisplay.textContent = formatTime(video.currentTime) + ' / ' + formatTime(video.duration);
+            playBtn.textContent = video.paused ? '▶' : '⏸';
+          });
+
+          function seek(e) {
+            const rect = progressBar.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / rect.width;
+            video.currentTime = ratio * video.duration;
+          }
+
+          function setVolume(val) { video.volume = val / 100; }
+          function muteToggle() { video.muted = !video.muted; }
+          function setSpeed(speed) { video.playbackRate = parseFloat(speed); }
+          function toggleFullscreen() {
+            if (document.fullscreenElement) document.exitFullscreen();
+            else video.parentElement.requestFullscreen();
+          }
+          function formatTime(s) {
+            const m = Math.floor(s / 60);
+            const sec = Math.floor(s % 60);
+            return m + ':' + (sec < 10 ? '0' : '') + sec;
+          }
+
+          // Download logic
+          async function downloadVideo() {
+            const playlistUrl = '${PLAYLIST_URL}';
+            downloadProgress.style.display = 'block';
+            downloadFill.style.width = '0%';
+            try {
+              const response = await fetch(playlistUrl);
+              const text = await response.text();
+              const lines = text.split('\n').filter(l => l.endsWith('.ts'));
+              const total = lines.length;
+              let downloaded = 0;
+              const segments = [];
+              for (const url of lines) {
+                const segResp = await fetch(url);
+                const blob = await segResp.blob();
+                segments.push(blob);
+                downloaded++;
+                downloadFill.style.width = ((downloaded / total) * 100) + '%';
+              }
+              const combined = new Blob(segments, { type: 'video/mp2t' });
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(combined);
+              a.download = 'video.ts';
+              a.click();
+              URL.revokeObjectURL(a.href);
+              downloadProgress.style.display = 'none';
+            } catch (err) {
+              console.error('Download failed', err);
+              alert('Download failed. Please try again.');
+              downloadProgress.style.display = 'none';
+            }
+          }
+
+          initPlayer();
+          </script>
+          </body>
+          </html>
+          HTMLEOF
+          cp /tmp/player.html ./player.html
+
+      - name: 🎨 Generate Audio Player HTML (audio)
+        if: ${{ github.event.inputs.type == 'audio' }}
+        run: |
+          REPO="${{ github.repository }}"
+          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
+          AUDIO_URL="${BASE_URL}/audio.mp3"
+          cat > /tmp/audio-player.html << HTML2
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="UTF-8"><title>Audio Player</title>
+          <style>
+            body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui; }
+            .player { background:#1a1a1a; padding:24px; border-radius:12px; color:#fff; width:90%; max-width:400px; text-align:center; }
+            audio { width:100%; margin:16px 0; }
+            .download-btn { background:#ff3b30; color:#fff; padding:10px 24px; border:none; border-radius:8px; cursor:pointer; font-size:16px; }
+          </style></head>
+          <body>
+          <div class="player">
+            <h3>Audio</h3>
+            <audio controls src="${AUDIO_URL}"></audio>
+            <a href="${AUDIO_URL}" download="audio.mp3"><button class="download-btn">⬇ Download MP3</button></a>
+          </div></body></html>
+          HTML2
+          cp /tmp/audio-player.html ./audio-player.html
+
+      - name: 🚀 Push to Temporary Branch
+        run: |
+          set -euo pipefail
+          TEMP_BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          ORPHAN_DIR=$(mktemp -d)
+          # Copy all deliverable files
+          if [[ "${{ github.event.inputs.type }}" == 'video' ]]; then
+            cp /tmp/hls/*.ts "$ORPHAN_DIR/" 2>/dev/null || true
+            cp /tmp/hls/*.m3u8 "$ORPHAN_DIR/" 2>/dev/null || true
+            cp /tmp/subtitles.vtt "$ORPHAN_DIR/" 2>/dev/null || true
+            cp ./player.html "$ORPHAN_DIR/"
+          else
+            cp /tmp/audio/audio.mp3 "$ORPHAN_DIR/"
+            cp ./audio-player.html "$ORPHAN_DIR/"
+          fi
+
+          cd "$ORPHAN_DIR"
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "$REPO_URL"
+
+          # Batched push (if many .ts files)
+          mapfile -t FILES < <(ls -1)
+          TOTAL=${#FILES[@]}
+          BATCH_SIZE=10
+          FIRST=0
+          COMMIT_COUNT=0
+
+          while [ $FIRST -lt $TOTAL ]; do
+            BATCH=("${FILES[@]:$FIRST:$BATCH_SIZE}")
+            git add -- "${BATCH[@]}"
+            git commit -m "chore: stream part $((COMMIT_COUNT+1)) [skip ci]" || { echo "ℹ️ Empty batch"; break; }
+            COMMIT_COUNT=$((COMMIT_COUNT+1))
+            echo "🚀 Pushing batch $COMMIT_COUNT (${#BATCH[@]} files)"
+            for attempt in 1 2 3; do
+              if [ $COMMIT_COUNT -eq 1 ]; then
+                git push origin "HEAD:$TEMP_BRANCH" --force && break
+              else
+                git push origin "HEAD:$TEMP_BRANCH" && break
+              fi
+              echo "⚠️ Push attempt $attempt failed, retrying..."
+              sleep 15
+            done
+            FIRST=$((FIRST + BATCH_SIZE))
+          done
+          echo "✅ All batches pushed"
+
+      - name: 🔀 Promote to Real Branch
+        run: |
+          TEMP_BRANCH="youtube-stream-tmp-${{ github.run_id }}"
+          REAL_BRANCH="youtube-stream"
+          git push origin "+refs/heads/$TEMP_BRANCH:refs/heads/$REAL_BRANCH"
+          git push origin --delete "$TEMP_BRANCH"
+          echo "✅ Branch $REAL_BRANCH updated"
+
+      - name: 📋 Summary
+        run: |
+          if [[ "${{ github.event.inputs.type }}" == 'video' ]]; then
+            echo "🎬 Stream player: https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/youtube-stream/player.html"
+          else
+            echo "🎵 Audio player: https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/youtube-stream/audio-player.html"
+          fi
