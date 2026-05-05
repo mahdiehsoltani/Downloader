@@ -1,4 +1,4 @@
-name: 🔎 Torrent Search (Final – Single‑Quote Safe)
+name: 🔎 Academic Search
 
 on:
   workflow_dispatch:
