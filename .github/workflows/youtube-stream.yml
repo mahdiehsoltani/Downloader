@@ -439,17 +439,7 @@ jobs:
           done
           echo "✅ Playlist rewritten with final branch URLs"
 
-      - name: 📥 Download hls.js and mux.js
-        run: |
-          echo "⬇️ Downloading hls.js..."
-          curl -sS -L -o /tmp/hls.min.js \
-            "https://cdn.jsdelivr.net/npm/hls.js@1.5.0/dist/hls.min.js"
-          echo "⬇️ Downloading mux.js for MP4 download..."
-          curl -sS -L -o /tmp/mux.min.js \
-            "https://cdn.jsdelivr.net/npm/mux.js@latest/dist/mux.min.js"
-          echo "✅ JS libraries downloaded"
-
-      - name: 🎨 Generate Player HTML (video) – light version
+      - name: 🎨 Generate Player HTML (video) – light version with ArvanCloud CDN
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           REPO="${{ github.repository }}"
@@ -460,9 +450,6 @@ jobs:
               PLAYLIST_URL="${BASE_URL}/playlist.m3u8"
           fi
 
-          HLS_JS_URL="${BASE_URL}/hls.min.js"
-          MUX_JS_URL="${BASE_URL}/mux.min.js"
-
           cat > /tmp/player.html << HTMLEOF
           <!DOCTYPE html>
           <html lang="en">
@@ -470,8 +457,8 @@ jobs:
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>YouTube HLS Player</title>
-          <script src="${HLS_JS_URL}"></script>
-          <script src="${MUX_JS_URL}"></script>
+          <script src="https://lib.arvancloud.ir/hls.js/1.3.3/hls.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+          <script src="https://lib.arvancloud.ir/mux.js/6.3.0/mux.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
           <style>
             * { margin:0; padding:0; box-sizing:border-box; }
             body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }
@@ -687,8 +674,6 @@ jobs:
             cp /tmp/hls/*.m3u8 "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/subtitles.vtt "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/player.html "$ORPHAN_DIR/"
-            cp /tmp/hls.min.js "$ORPHAN_DIR/"
-            cp /tmp/mux.min.js "$ORPHAN_DIR/"
           else
             cp /tmp/audio/audio.mp3 "$ORPHAN_DIR/"
             cp /tmp/audio-player.html "$ORPHAN_DIR/"
