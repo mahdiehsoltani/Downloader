@@ -367,6 +367,7 @@ jobs:
           echo "✅ Media integrity OK (duration: ${DURATION:-unknown}s)"
 
       - name: 🎬 Process Video to HLS
+        id: process_video
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           set -euo pipefail
@@ -456,9 +457,10 @@ jobs:
           BRANCH="youtube-stream-tmp-${{ github.run_id }}"
           BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
           PLAYLIST_URL="${BASE_URL}/master.m3u8"
-          if [[ "${{ steps.converter.outputs.has_subtitles }}" != "true" ]]; then
+          if [[ "${{ steps.process_video.outputs.has_subtitles }}" != "true" ]]; then
               PLAYLIST_URL="${BASE_URL}/playlist.m3u8"
           fi
+          HLS_JS_URL="${BASE_URL}/hls.min.js"
 
           cat > /tmp/player.html << 'HTMLEOF'
           <!DOCTYPE html>
@@ -467,7 +469,7 @@ jobs:
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>YouTube HLS Player</title>
-          <script src="hls.min.js"></script>
+          <script src="__HLS_JS_URL__"></script>
           <style>
             * { margin:0; padding:0; box-sizing:border-box; }
             body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }
@@ -655,7 +657,7 @@ jobs:
           </html>
           HTMLEOF
 
-          # Replace placeholder with actual playlist URL
+          sed -i "s|__HLS_JS_URL__|${HLS_JS_URL}|g" /tmp/player.html
           sed -i "s|__PLAYLIST_URL__|${PLAYLIST_URL}|g" /tmp/player.html
           cp /tmp/player.html ./player.html
 
@@ -734,7 +736,6 @@ jobs:
             FIRST=$((FIRST + BATCH_SIZE))
           done
 
-          # Promote to real branch and delete temp
           echo "🔀 Promoting $TEMP_BRANCH → $REAL_BRANCH"
           git push origin "+HEAD:refs/heads/$REAL_BRANCH"
           git push origin --delete "$TEMP_BRANCH"
