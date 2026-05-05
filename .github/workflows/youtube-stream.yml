@@ -442,6 +442,13 @@ jobs:
 
           echo "✅ Playlist rewritten"
 
+      - name: 📥 Download hls.js for self-contained player
+        run: |
+          echo "⬇️ Downloading hls.js..."
+          curl -sS -L -o /tmp/hls.min.js \
+            "https://cdn.jsdelivr.net/npm/hls.js@1.5.0/dist/hls.min.js"
+          echo "✅ hls.js downloaded"
+
       - name: 🎨 Generate Player HTML (video)
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
@@ -449,18 +456,18 @@ jobs:
           BRANCH="youtube-stream-tmp-${{ github.run_id }}"
           BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
           PLAYLIST_URL="${BASE_URL}/master.m3u8"
-          if [[ "${{ steps.download.outputs.has_subtitles }}" != "true" ]]; then
+          if [[ "${{ steps.converter.outputs.has_subtitles }}" != "true" ]]; then
               PLAYLIST_URL="${BASE_URL}/playlist.m3u8"
           fi
 
-          cat > /tmp/player.html << HTMLEOF
+          cat > /tmp/player.html << 'HTMLEOF'
           <!DOCTYPE html>
           <html lang="en">
           <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>YouTube HLS Player</title>
-          <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+          <script src="hls.min.js"></script>
           <style>
             * { margin:0; padding:0; box-sizing:border-box; }
             body { background:#0a0a0a; display:flex; justify-content:center; align-items:center; min-height:100vh; font-family:system-ui, -apple-system, sans-serif; }
@@ -532,9 +539,9 @@ jobs:
           let hls;
 
           function initPlayer() {
-            if (Hls.isSupported()) {
+            if (typeof Hls !== 'undefined' && Hls.isSupported()) {
               hls = new Hls({ debug: false });
-              hls.loadSource('${PLAYLIST_URL}');
+              hls.loadSource('__PLAYLIST_URL__');
               hls.attachMedia(video);
               hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 console.log('HLS manifest loaded');
@@ -547,7 +554,7 @@ jobs:
                 }
               });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-              video.src = '${PLAYLIST_URL}';
+              video.src = '__PLAYLIST_URL__';
             } else {
               alert('Your browser does not support HLS playback.');
             }
@@ -596,7 +603,7 @@ jobs:
           }
 
           async function downloadVideo() {
-            const playlistUrl = '${PLAYLIST_URL}';
+            const playlistUrl = '__PLAYLIST_URL__';
             downloadProgress.style.display = 'block';
             downloadFill.style.width = '0%';
             try {
@@ -627,11 +634,29 @@ jobs:
             }
           }
 
-          initPlayer();
+          // Wait for Hls to be defined before initializing
+          if (typeof Hls !== 'undefined') {
+            initPlayer();
+          } else {
+            let tries = 0;
+            const checkInterval = setInterval(() => {
+              if (typeof Hls !== 'undefined') {
+                clearInterval(checkInterval);
+                initPlayer();
+              }
+              if (++tries > 50) {
+                clearInterval(checkInterval);
+                console.error('Hls.js failed to load');
+              }
+            }, 100);
+          }
           </script>
           </body>
           </html>
           HTMLEOF
+
+          # Replace placeholder with actual playlist URL
+          sed -i "s|__PLAYLIST_URL__|${PLAYLIST_URL}|g" /tmp/player.html
           cp /tmp/player.html ./player.html
 
       - name: 🎨 Generate Audio Player HTML (audio)
@@ -673,6 +698,7 @@ jobs:
             cp /tmp/hls/*.m3u8 "$ORPHAN_DIR/" 2>/dev/null || true
             cp /tmp/subtitles.vtt "$ORPHAN_DIR/" 2>/dev/null || true
             cp ./player.html "$ORPHAN_DIR/"
+            cp /tmp/hls.min.js "$ORPHAN_DIR/"
           else
             cp /tmp/audio/audio.mp3 "$ORPHAN_DIR/"
             cp ./audio-player.html "$ORPHAN_DIR/"
@@ -708,7 +734,7 @@ jobs:
             FIRST=$((FIRST + BATCH_SIZE))
           done
 
-          # Promote directly from the orphan directory
+          # Promote to real branch and delete temp
           echo "🔀 Promoting $TEMP_BRANCH → $REAL_BRANCH"
           git push origin "+HEAD:refs/heads/$REAL_BRANCH"
           git push origin --delete "$TEMP_BRANCH"
