@@ -195,11 +195,9 @@ jobs:
             exit 1
           fi
 
-          # Total size of downloaded content in bytes
           CONTENT_SIZE=$(du -sb "$DL_DIR" | cut -f1)
           AVAILABLE_KB=$(df /home/runner | awk 'NR==2 {print $4}')
           AVAILABLE_BYTES=$((AVAILABLE_KB * 1024))
-          # We need roughly 2x content size for zip + overhead
           if [ "$AVAILABLE_BYTES" -lt $((CONTENT_SIZE * 2)) ]; then
             echo "❌ Not enough free disk space. Content: $((CONTENT_SIZE/1048576)) MB, free: $((AVAILABLE_BYTES/1048576)) MB"
             exit 1
@@ -215,7 +213,6 @@ jobs:
           mkdir -p "$DELIVER_DIR"
 
           THRESHOLD_MB=${{ github.event.inputs.split_threshold_mb }}
-          # Hard limit for git push is 90 MB
           HARD_LIMIT_MB=90
           if [ "$THRESHOLD_MB" -gt 0 ] 2>/dev/null && [ "$THRESHOLD_MB" -le "$HARD_LIMIT_MB" ]; then
             SPLIT_MB=$THRESHOLD_MB
@@ -225,7 +222,6 @@ jobs:
 
           echo "✂️ Creating split zip with part size ${SPLIT_MB} MB"
           cd "$DL_DIR"
-          # Create split zip directly – no huge intermediate file
           zip -r -s "${SPLIT_MB}m" "${OLDPWD}/${DELIVER_DIR}/torrent_content.zip" . >/dev/null 2>&1
           cd -
 
@@ -235,37 +231,54 @@ jobs:
           echo "📂 Final delivery contents:"
           ls -lh "$DELIVER_DIR"
 
-      - name: 🚀 Force-Push to Orphan 'torrent-downloads' Branch
+      - name: 🚀 Batched Push to Orphan 'torrent-downloads' Branch
         run: |
           set -euo pipefail
           BRANCH="torrent-downloads"
           REPO_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          DELIVER_DIR="./deliver"
+          BATCH_SIZE=5
+
+          # Delete remote branch so we start fresh
+          git push origin --delete "$BRANCH" 2>/dev/null || true
 
           ORPHAN_DIR=$(mktemp -d)
-          cp -a ./deliver/* "$ORPHAN_DIR/"
-
+          cp "$DELIVER_DIR"/* "$ORPHAN_DIR/"
           cd "$ORPHAN_DIR"
           git init
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add origin "$REPO_URL"
-          git add .
-          git commit -m "chore: torrent download [skip ci]" || {
-            echo "ℹ️ Nothing to commit"
-            exit 0
-          }
 
-          for attempt in 1 2 3; do
-            echo "🚀 Force-push attempt $attempt to $BRANCH..."
-            if git push origin "HEAD:$BRANCH" --force; then
-              echo "✅ Push succeeded"
-              exit 0
-            fi
-            echo "⚠️ Push failed, waiting 15s..."
-            sleep 15
+          # Split files into batches
+          mapfile -t FILES < <(ls -1)
+          TOTAL=${#FILES[@]}
+          FIRST=0
+          COMMIT_COUNT=0
+
+          while [ $FIRST -lt $TOTAL ]; do
+            BATCH=("${FILES[@]:$FIRST:$BATCH_SIZE}")
+            git add -- "${BATCH[@]}"
+            COMMIT_MSG="chore: torrent download part $((COMMIT_COUNT+1)) [skip ci]"
+            git commit -m "$COMMIT_MSG" || { echo "ℹ️ Nothing to commit (batch empty)"; break; }
+            COMMIT_COUNT=$((COMMIT_COUNT+1))
+            echo "🚀 Pushing batch $COMMIT_COUNT (${#BATCH[@]} files)..."
+            for attempt in 1 2 3; do
+              if [ $COMMIT_COUNT -eq 1 ]; then
+                # first commit: force push to create branch
+                git push origin "HEAD:$BRANCH" --force && break
+              else
+                git push origin "HEAD:$BRANCH" && break
+              fi
+              echo "⚠️ Push attempt $attempt failed, waiting 15s..."
+              sleep 15
+            done
+            FIRST=$((FIRST + BATCH_SIZE))
           done
-          echo "❌ Push failed after 3 attempts"
-          exit 1
+
+          echo "✅ All batches pushed successfully"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ☁️ Upload to Gofile (optional)
         if: ${{ github.event.inputs.upload_to_gofile == 'true' }}
