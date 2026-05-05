@@ -28,13 +28,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+
     steps:
       - name: 📂 Checkout Repository (shallow)
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: main
-          fetch-depth: 1  # only latest commit
+          fetch-depth: 1
 
       - name: 💾 Restore cached packages (pip & Python)
         uses: actions/cache@v4
@@ -49,7 +50,10 @@ jobs:
       - name: 📦 Restore cached apt packages
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
+          path: |
+            /var/cache/apt/archives/*.deb
+            !/var/cache/apt/archives/lock
+            !/var/cache/apt/archives/partial
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/youtube-stream.yml') }}
           restore-keys: |
             apt-${{ runner.os }}-
@@ -57,7 +61,6 @@ jobs:
       - name: 🔧 Install Dependencies (parallel apt & pip, cached debs)
         run: |
           set -euo pipefail
-          # apt-get in background (will use cached .deb files when available)
           (
             for i in 1 2 3; do
               echo "🔄 apt-get attempt $i..."
@@ -66,13 +69,11 @@ jobs:
           ) &
           APT_PID=$!
 
-          # pip in background
           (
             pip install --cache-dir ~/.cache/pip requests
           ) &
           PIP_PID=$!
 
-          # wait for both to finish
           wait $APT_PID
           wait $PIP_PID
           echo "✅ Dependencies installed"
@@ -80,7 +81,10 @@ jobs:
       - name: 📦 Save apt cache (post-install)
         uses: actions/cache/save@v4
         with:
-          path: /var/cache/apt/archives
+          path: |
+            /var/cache/apt/archives/*.deb
+            !/var/cache/apt/archives/lock
+            !/var/cache/apt/archives/partial
           key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/youtube-stream.yml') }}
 
       - name: 🎯 Request Conversion & Gather Metadata
