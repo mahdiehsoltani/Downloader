@@ -101,7 +101,7 @@ jobs:
           TORRENT_LINK="${{ github.event.inputs.torrent_link }}"
 
           COOKIE_JAR=$(mktemp)
-          LOGIN_RESP=$(curl -s -c "$COOKIE_JAR" -w "%{http_code}" \
+          LOGIN_RESP=$(curl -s -o /dev/null -c "$COOKIE_JAR" -w "%{http_code}" \
             -X POST "$TOKEN/auth/login" \
             --data "username=admin" \
             --data "password=$QBT_PASSWORD")
@@ -112,7 +112,7 @@ jobs:
           fi
           echo "✅ Logged in"
 
-          ADD_STATUS=$(curl -s -b "$COOKIE_JAR" -o /dev/null -w "%{http_code}" \
+          ADD_STATUS=$(curl -s -o /dev/null -b "$COOKIE_JAR" -w "%{http_code}" \
             -X POST "$TOKEN/torrents/add" \
             --data-urlencode "urls=$TORRENT_LINK" \
             --data "savepath=/home/runner/downloads")
