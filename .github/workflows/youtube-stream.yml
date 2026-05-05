@@ -411,7 +411,6 @@ jobs:
 
           rm -f "$INPUT_FILE"
           echo "✅ Segmentation complete"
-          echo "segments_dir=$SEGMENT_DIR" >> $GITHUB_OUTPUT
           echo "has_subtitles=$( [[ -n "$SUBTITLE_FILE" ]] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
 
       - name: 🎵 Process Audio (single file)
@@ -422,26 +421,23 @@ jobs:
           mkdir -p /tmp/audio
           cp "$TEMP_DIR/$FILENAME" /tmp/audio/audio.mp3
           rm -f "$TEMP_DIR/$FILENAME"
-          echo "audio_dir=/tmp/audio" >> $GITHUB_OUTPUT
 
-      - name: 🔗 Rewrite Playlist with Raw URLs (video only)
+      - name: 🔗 Rewrite Playlist with Final Branch Raw URLs (video only)
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           SEGMENT_DIR="/tmp/hls"
           REPO="${{ github.repository }}"
-          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
-          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/youtube-stream"
 
           if [ -f "$SEGMENT_DIR/master.m3u8" ]; then
             sed -i "s|playlist.m3u8|${BASE_URL}/playlist.m3u8|g" "$SEGMENT_DIR/master.m3u8"
-            sed -i "s|subtitle_eng.m3u8|${BASE_URL}/subtitle_eng.m3u8|g" "$SEGMENT_DIR/master.m3u8"
+            sed -i "s|subtitle_eng.m3u8|${BASE_URL}/subtitle_eng.m3u8|g" "$SEGMENT_DIR/master.m3u8" 2>/dev/null || true
           fi
 
           for pl in "$SEGMENT_DIR"/*.m3u8; do
             sed -i "s|segment_|${BASE_URL}/segment_|g" "$pl"
           done
-
-          echo "✅ Playlist rewritten"
+          echo "✅ Playlist rewritten with final branch URLs"
 
       - name: 📥 Download hls.js for inline embedding
         run: |
@@ -454,7 +450,7 @@ jobs:
         if: ${{ github.event.inputs.type == 'video' }}
         shell: python3 {0}
         run: |
-          import sys, os
+          import os
 
           with open('/tmp/hls.min.js', 'r') as f:
               hls_js = f.read()
@@ -647,14 +643,13 @@ jobs:
               f.write(html)
           print("✅ Player HTML generated (hls.js inlined)")
         env:
-          PLAYLIST_URL: ${{ steps.process_video.outputs.has_subtitles == 'true' && format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream-tmp-{1}/master.m3u8', github.repository, github.run_id) || format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream-tmp-{1}/playlist.m3u8', github.repository, github.run_id) }}
+          PLAYLIST_URL: ${{ steps.process_video.outputs.has_subtitles == 'true' && format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream/master.m3u8', github.repository) || format('https://raw.githubusercontent.com/{0}/refs/heads/youtube-stream/playlist.m3u8', github.repository) }}
 
       - name: 🎨 Generate Audio Player HTML (audio)
         if: ${{ github.event.inputs.type == 'audio' }}
         run: |
           REPO="${{ github.repository }}"
-          BRANCH="youtube-stream-tmp-${{ github.run_id }}"
-          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/${BRANCH}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/refs/heads/youtube-stream"
           AUDIO_URL="${BASE_URL}/audio.mp3"
           cat > /tmp/audio-player.html << HTML2
           <!DOCTYPE html>
