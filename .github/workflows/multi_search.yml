@@ -1,4 +1,4 @@
-name: 🔎 Multi Search
+name: 🔎 Search Academic Torrents (RSS → Branch)
 
 on:
   workflow_dispatch:
@@ -50,24 +50,57 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout repository (shallow)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 💾 Restore cached pip packages
+      - name: 💾 Restore cached packages (pip & Python)
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
+          path: |
+            ~/.cache/pip
+            /opt/hostedtoolcache/Python
           key: pip-${{ runner.os }}-${{ hashFiles('.github/workflows/search.yml') }}
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: 📦 Install dependencies
-        run: pip install feedparser requests beautifulsoup4 snowfl scrapy
+      - name: 📦 Restore cached apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/search.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-
+
+      - name: 🔧 Install dependencies (parallel apt & pip, cached)
+        run: |
+          set -euo pipefail
+          (
+            echo "🔄 apt-get update & install..."
+            sudo apt-get update && sudo apt-get install -y curl jq python3-pip
+          ) &
+          APT_PID=$!
+
+          (
+            pip install --cache-dir ~/.cache/pip feedparser requests beautifulsoup4 snowfl scrapy
+          ) &
+          PIP_PID=$!
+
+          wait $APT_PID
+          wait $PIP_PID
+          echo "✅ Dependencies installed"
+
+      - name: 📦 Save apt cache (post-install)
+        uses: actions/cache/save@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/search.yml') }}
 
       - name: 🔧 Decode Python script
         run: |
