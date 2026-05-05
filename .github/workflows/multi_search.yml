@@ -1,4 +1,4 @@
-name: 🔎 Search Academic Torrents (RSS → Branch)
+name: 🔎 Multi Search
 
 on:
   workflow_dispatch:
