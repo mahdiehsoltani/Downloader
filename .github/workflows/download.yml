@@ -132,6 +132,7 @@ jobs:
         env:
           QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
           COOKIE_JAR: ${{ env.COOKIE_JAR }}
+          PYTHONUNBUFFERED: 1                # <-- force unbuffered output
         run: |
           import time, sys, requests, os
 
@@ -160,17 +161,19 @@ jobs:
           last_left = -1
           stall_count = 0
 
-          print("⏳ Monitoring download...")
+          print("⏳ Monitoring started – first check in 10s...", flush=True)
+          time.sleep(10)   # quicker initial feedback
+
           while True:
-              time.sleep(CHECK_INTERVAL)
               try:
                   resp = session.get(f"{API}/torrents/info", timeout=10)
                   if resp.status_code != 200:
-                      print(f"⚠️ API error {resp.status_code}")
+                      print(f"⚠️ API error {resp.status_code}", flush=True)
+                      time.sleep(CHECK_INTERVAL)
                       continue
                   torrents = resp.json()
                   if not torrents:
-                      print("⚠️ No torrents found")
+                      print("⚠️ No torrents found", flush=True)
                       sys.exit(1)
 
                   t = torrents[0]
@@ -178,32 +181,35 @@ jobs:
                   progress = t.get("progress", 0.0)
                   amount_left = t.get("amount_left", -1)
                   name = t.get("name", "unknown")
-                  print(f"   {name}: {progress*100:.1f}% | state: {state} | {amount_left} bytes left")
+                  print(f"   {name}: {progress*100:.1f}% | state: {state} | {amount_left} bytes left", flush=True)
 
                   if state in ("uploading", "stalledUP", "pausedUP", "forcedUP") and amount_left == 0:
-                      print("✅ Download complete!")
+                      print("✅ Download complete!", flush=True)
                       break
 
                   if state in ("error", "missingFiles"):
-                      print(f"❌ Torrent in error state: {state}")
+                      print(f"❌ Torrent in error state: {state}", flush=True)
                       sys.exit(1)
 
                   if amount_left == last_left:
                       stall_count += 1
                       if stall_count >= STALL_LIMIT:
-                          print(f"❌ Stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} min")
+                          print(f"❌ Stalled for {STALL_LIMIT * CHECK_INTERVAL // 60} min", flush=True)
                           sys.exit(1)
                   else:
                       stall_count = 0
                       last_left = amount_left
 
                   if time.time() - start_time > TIMEOUT:
-                      print("⏰ Timeout")
+                      print("⏰ Timeout", flush=True)
                       sys.exit(1)
 
               except requests.ConnectionError:
-                  print("⚠️ Connection lost")
+                  print("⚠️ Connection lost", flush=True)
                   sys.exit(1)
+
+              time.sleep(CHECK_INTERVAL)
+        # end python
 
       - name: 🛑 Stop qBittorrent
         if: always()
