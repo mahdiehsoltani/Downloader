@@ -439,7 +439,7 @@ jobs:
           done
           echo "✅ Playlist rewritten with final branch URLs"
 
-      - name: 🎨 Generate Player HTML (video) – fixes included
+      - name: 🎨 Generate Player HTML (video) – master playlist & download fix
         if: ${{ github.event.inputs.type == 'video' }}
         run: |
           REPO="${{ github.repository }}"
@@ -560,7 +560,6 @@ jobs:
             else { video.pause(); playBtn.textContent = '▶'; }
           }
 
-          // Click on the video to toggle play/pause
           video.addEventListener('click', togglePlay);
 
           video.addEventListener('timeupdate', () => {
@@ -593,13 +592,54 @@ jobs:
             downloadProgress.style.display = 'block';
             downloadFill.style.width = '0%';
             try {
+              console.log('Fetching master/m3u8: ' + PLAYLIST_URL);
               const response = await fetch(PLAYLIST_URL);
               const text = await response.text();
-              // handle both Windows and Unix line endings, trim whitespace
+
+              let mediaPlaylistUrl = PLAYLIST_URL;
+              // Check if this is a master playlist
+              if (text.includes('#EXT-X-STREAM-INF')) {
+                console.log('Master playlist detected, extracting first variant');
+                const lines = text.split(/\r?\n/);
+                let firstVariant = null;
+                for (let i = 0; i < lines.length; i++) {
+                  if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+                    // next line is the variant URL
+                    const variantUrl = lines[i+1] ? lines[i+1].trim() : null;
+                    if (variantUrl && !variantUrl.startsWith('#')) {
+                      firstVariant = variantUrl;
+                      break;
+                    }
+                  }
+                }
+                if (!firstVariant) throw new Error('No variant stream found in master playlist');
+                console.log('First variant URL: ' + firstVariant);
+                // Resolve relative URL
+                if (firstVariant.startsWith('http')) {
+                  mediaPlaylistUrl = firstVariant;
+                } else {
+                  const base = PLAYLIST_URL.substring(0, PLAYLIST_URL.lastIndexOf('/') + 1);
+                  mediaPlaylistUrl = base + firstVariant;
+                }
+                console.log('Resolved media playlist URL: ' + mediaPlaylistUrl);
+                // Fetch the media playlist
+                const mediaResp = await fetch(mediaPlaylistUrl);
+                text = await mediaResp.text();
+              }
+
+              console.log('Parsing segment list');
               const segmentUrls = text.split(/\r?\n/)
                 .map(l => l.trim())
                 .filter(l => l.endsWith('.ts'));
+              console.log('Found ' + segmentUrls.length + ' segments');
               if (!segmentUrls.length) throw new Error('No segments found');
+
+              // Resolve segment URLs relative to media playlist
+              const baseUrl = mediaPlaylistUrl.substring(0, mediaPlaylistUrl.lastIndexOf('/') + 1);
+              const fullSegmentUrls = segmentUrls.map(seg => {
+                if (seg.startsWith('http')) return seg;
+                return baseUrl + seg;
+              });
 
               let initSegmentPushed = false;
               const transmuxer = new muxjs.mp4.Transmuxer();
@@ -619,16 +659,18 @@ jobs:
                 transmuxer.on('done', resolve);
                 transmuxer.on('error', reject);
                 (async () => {
-                  for (let i = 0; i < segmentUrls.length; i++) {
-                    const resp = await fetch(segmentUrls[i]);
+                  for (let i = 0; i < fullSegmentUrls.length; i++) {
+                    console.log('Downloading segment ' + (i+1) + '/' + fullSegmentUrls.length);
+                    const resp = await fetch(fullSegmentUrls[i]);
                     const buffer = await resp.arrayBuffer();
                     transmuxer.push(new Uint8Array(buffer));
                     transmuxer.flush();
-                    downloadFill.style.width = ((i + 1) / segmentUrls.length * 100) + '%';
+                    downloadFill.style.width = ((i + 1) / fullSegmentUrls.length * 100) + '%';
                   }
                   transmuxer.endTimeline();
                 })();
               });
+              console.log('Transmuxing complete');
               const blob = new Blob(chunks, { type: 'video/mp4' });
               const a = document.createElement('a');
               a.href = URL.createObjectURL(blob);
@@ -638,7 +680,7 @@ jobs:
               downloadProgress.style.display = 'none';
             } catch (err) {
               console.error('Download failed', err);
-              alert('Download failed. Please try again.');
+              alert('Download failed: ' + err.message);
               downloadProgress.style.display = 'none';
             }
           }
