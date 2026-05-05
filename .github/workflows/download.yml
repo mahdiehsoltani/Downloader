@@ -128,7 +128,7 @@ jobs:
 
       - name: ⏳ Monitor Download Progress
         id: monitor
-        shell: python3
+        shell: python
         env:
           QBT_PASSWORD: ${{ env.QBT_PASSWORD }}
           COOKIE_JAR: ${{ env.COOKIE_JAR }}
