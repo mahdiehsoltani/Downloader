@@ -1,0 +1,40 @@
+name: 🔗 Get Whisper Model Links
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-links:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests beautifulsoup4
+      - name: Fetch & extract model URLs
+        run: |
+          python << 'EOF'
+          import requests, re
+
+          # The official GitHub discussion where all .pt links are posted
+          url = "https://github.com/openai/whisper/discussions/2"
+
+          resp = requests.get(url)
+          # Simple regex to find Azure Edge model URLs
+          pattern = r'https://openaipublic\.azureedge\.net/main/whisper/models/[a-f0-9]+/[^"'\s#?]+\.pt'
+          links = re.findall(pattern, resp.text)
+
+          with open("whisper_models.txt", "w") as f:
+              for link in links:
+                  f.write(link + "\n")
+
+          print(f"Found {len(links)} model URLs")
+          EOF
+      - name: Upload links as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-model-links
+          path: whisper_models.txt
