@@ -1,0 +1,240 @@
+name: 📥 General File Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '🔗 Direct download URL of the file'
+        required: true
+        type: string
+      file_name:
+        description: '📄 Custom filename (optional – if empty, derived from URL)'
+        required: false
+        type: string
+        default: ''
+      split_threshold_mb:
+        description: '📦 Split files larger than (MB) — 0 = never'
+        required: false
+        type: number
+        default: 90
+
+jobs:
+  download-and-deliver:
+    name: 🚀 Download & Deliver
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📂 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip curl
+
+      - name: 💾 Disk Space Check
+        run: |
+          AVAIL_KB=$(df /home/runner | awk 'NR==2 {print $4}')
+          AVAIL_MB=$((AVAIL_KB / 1024))
+          echo "📀 Available space: ${AVAIL_MB} MB"
+          if [[ $AVAIL_MB -lt 3072 ]]; then
+            echo "❌ Less than 3 GB free, aborting to avoid disk exhaustion"
+            exit 1
+          fi
+
+      - name: ⬇️ Download File
+        id: download
+        run: |
+          set -euo pipefail
+          URL="${{ github.event.inputs.url }}"
+          CUSTOM_NAME="${{ github.event.inputs.file_name }}"
+
+          # Determine filename
+          if [[ -n "$CUSTOM_NAME" ]]; then
+            FILENAME="$CUSTOM_NAME"
+          else
+            # Try to extract from URL (last part after slash, remove query string)
+            FILENAME=$(basename "$URL" | sed 's/\?.*//')
+            if [[ -z "$FILENAME" ]]; then
+              FILENAME="downloaded_file_$(date +%Y%m%d-%H%M%S)"
+            fi
+          fi
+
+          TEMP_DIR="./downloads/temp"
+          mkdir -p "$TEMP_DIR"
+
+          echo "⬇️ Downloading from: $URL"
+          echo "📄 Target filename: $FILENAME"
+
+          # Download with retries and speed limit
+          download_with_retry() {
+            local url="$1" output="$2"
+            local retries=3
+            for i in $(seq 1 $retries); do
+              echo "🔄 Attempt $i/$retries..."
+              HTTP_CODE=$(curl -sS -w "%{http_code}" -L \
+                --fail --speed-limit 1024 --speed-time 30 \
+                -o "$output" --max-time 900 "$url" 2>&1)
+              if [[ "$HTTP_CODE" == "200" ]]; then
+                return 0
+              fi
+              echo "⚠️ Attempt $i failed (HTTP $HTTP_CODE), waiting..."
+              sleep 10
+            done
+            return 1
+          }
+
+          if download_with_retry "$URL" "$TEMP_DIR/$FILENAME"; then
+            echo "✅ Download successful"
+          else
+            echo "❌ Download failed after all retries"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$TEMP_DIR/$FILENAME")
+          FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+          if [[ $FILE_SIZE -lt 1024 ]]; then
+            echo "❌ File too small (${FILE_SIZE_MB} MB) – likely an error page"
+            exit 1
+          fi
+          echo "📏 Size: ${FILE_SIZE_MB} MB"
+
+          # Store metadata for later steps
+          echo "$FILENAME" > /tmp/download_metadata.txt
+
+      - name: 📦 Prepare Artifact Staging (whole file)
+        run: |
+          FILENAME=$(cat /tmp/download_metadata.txt)
+          mkdir -p ./artifact-staging
+          if [[ -f "./downloads/temp/$FILENAME" ]]; then
+            cp "./downloads/temp/$FILENAME" "./artifact-staging/$FILENAME"
+            echo "✅ Whole file copied to artifact staging"
+          fi
+
+      - name: ✂️ Smart Split & Safety Limit
+        run: |
+          set -euo pipefail
+          THRESHOLD_MB="${{ github.event.inputs.split_threshold_mb }}"
+          HARD_LIMIT_MB=90
+
+          if [[ "$THRESHOLD_MB" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            THRESHOLD_MB=$(printf "%.0f" "$THRESHOLD_MB")
+          else
+            echo "❌ Invalid split threshold: $THRESHOLD_MB"
+            exit 1
+          fi
+
+          echo "📐 Split threshold (user): ${THRESHOLD_MB} MB"
+          echo "🛡️ Hard push limit: ${HARD_LIMIT_MB} MB"
+
+          process_file() {
+            local file="$1"
+            local size=$(stat -c%s "$file")
+            local basename=$(basename "$file")
+            local size_mb=$((size / 1048576))
+
+            local split_size="${THRESHOLD_MB}"
+            if [[ $split_size -eq 0 || $split_size -gt $HARD_LIMIT_MB ]]; then
+              if [[ $size -gt $((HARD_LIMIT_MB * 1048576)) ]]; then
+                echo "🛡️ File ${basename} (${size_mb}MB) exceeds hard push limit → force-splitting at ${HARD_LIMIT_MB}MB"
+                split_size="$HARD_LIMIT_MB"
+              else
+                echo "📁 $basename (${size_mb}MB) — no split required"
+                mv "$file" "./downloads/"
+                return
+              fi
+            fi
+
+            if [[ $split_size -gt 0 && $size -gt $((split_size * 1048576)) ]]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "✂️ Splitting $basename (${size_mb}MB) into ${split_size}MB parts"
+              cd ./downloads
+              zip -r -s "${split_size}m" "${basename}.zip" "temp/${basename}" || {
+                echo "❌ Zip failed"
+                exit 1
+              }
+              cd ..
+              shopt -s nullglob
+              parts=( "./downloads/${basename}".z* "./downloads/${basename}.zip" )
+              if [[ ${#parts[@]} -eq 0 ]]; then
+                echo "❌ No split parts found!"
+                exit 1
+              fi
+              echo "✅ Split into ${#parts[@]} parts"
+              if [[ -f "$file" ]]; then
+                rm "$file"
+              fi
+            else
+              echo "📁 $basename (${size_mb}MB) — under split threshold"
+              mv "$file" "./downloads/"
+            fi
+          }
+
+          export -f process_file
+          export THRESHOLD_MB HARD_LIMIT_MB
+
+          if [[ -d ./downloads/temp ]]; then
+            find ./downloads/temp -type f -exec bash -c 'process_file "$1"' _ {} \;
+            rm -rf ./downloads/temp
+          else
+            echo "ℹ️ No temp files to process"
+          fi
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📂 Final deliverables in ./downloads/:"
+          ls -lh ./downloads/ 2>/dev/null | tail -n +2 | awk '{print "  • " $NF " (" $5 ")"}'
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: 📤 Commit & Force-Push to 'downloads' Branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [[ ! -d ./downloads ]]; then
+            echo "ℹ️ No downloads directory"
+            exit 0
+          fi
+
+          git add ./downloads/
+
+          if git diff --staged --quiet; then
+            echo "ℹ️ No changes to commit"
+            exit 0
+          fi
+
+          TOTAL_FILES=$(git diff --staged --name-only | wc -l)
+          echo "📦 Committing $TOTAL_FILES file(s)"
+
+          git commit -m "chore: add downloaded file(s) [skip ci]"
+
+          for attempt in 1 2 3; do
+            echo "🚀 Force-push attempt $attempt to downloads branch..."
+            if git push origin HEAD:downloads --force; then
+              echo "✅ Force-push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "⚠️ Push failed, waiting 15 seconds..."
+            sleep 15
+          done
+          echo "❌ Push failed after 3 attempts"
+          exit 1
+
+      - name: 📦 Upload Whole File as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-file-${{ github.run_id }}
+          path: ./artifact-staging/*
+          retention-days: 90
+
+      - name: 📋 Summary
+        run: |
+          echo "📁 Split files (if any) committed to branch 'downloads'"
+          echo "🌐 Permanent zip of that branch: https://github.com/${{ github.repository }}/archive/refs/heads/downloads.zip"
+          echo "📦 Whole file available as artifact in this run's 'Artifacts' section (expires in 90 days)"
