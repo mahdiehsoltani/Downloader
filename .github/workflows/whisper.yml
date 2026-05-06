@@ -1,4 +1,4 @@
-name: 🔗 Get Whisper Model Links
+name: 🔗 Get Whisper Model Links (via API)
 
 on:
   workflow_dispatch:
@@ -13,26 +13,51 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests beautifulsoup4
-      - name: Fetch & extract model URLs
+      - run: pip install requests
+      - name: Fetch models from GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}   # optional, but avoids rate limits
         run: |
           python << 'EOF'
           import requests, re
 
-          url = "https://github.com/openai/whisper/discussions/2"
-          resp = requests.get(url)
+          headers = {"Accept": "application/vnd.github+json"}
+          # use token for higher rate limits (optional)
+          # head = {} if not token else {"Authorization": f"Bearer {os.environ['GH_TOKEN']}"}
 
-          # Corrected regex (no stray single quote)
-          pattern = r'https://openaipublic\.azureedge\.net/main/whisper/models/[a-f0-9]+/[^"\s#?]+\.pt'
-          links = re.findall(pattern, resp.text)
+          # 1. Fetch the initial discussion body
+          disc_url = "https://api.github.com/repos/openai/whisper/discussions/2"
+          r = requests.get(disc_url, headers=headers)
+          r.raise_for_status()
+          bodies = [r.json()["body"]]
+
+          # 2. Fetch all comments (paginated, but discussion #2 has only a few)
+          comments_url = "https://api.github.com/repos/openai/whisper/discussions/2/comments"
+          page = 1
+          while True:
+              params = {"page": page, "per_page": 100}
+              rc = requests.get(comments_url, headers=headers, params=params)
+              rc.raise_for_status()
+              comments = rc.json()
+              if not comments:
+                  break
+              for comment in comments:
+                  bodies.append(comment["body"])
+              page += 1
+
+          # 3. Extract all unique model URLs from Markdown links
+          pattern = r'\[.*?\]\((https://openaipublic\.azureedge\.net/main/whisper/models/[a-f0-9]+/[^)]+\.pt)\)'
+          links = set()
+          for body in bodies:
+              links.update(re.findall(pattern, body, re.IGNORECASE))
 
           with open("whisper_models.txt", "w") as f:
-              for link in links:
+              for link in sorted(links):
                   f.write(link + "\n")
 
           print(f"Found {len(links)} model URLs")
           EOF
-      - name: Upload links as artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: whisper-model-links
