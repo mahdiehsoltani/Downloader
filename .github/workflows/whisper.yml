@@ -19,12 +19,11 @@ jobs:
           python << 'EOF'
           import requests, re
 
-          # The official GitHub discussion where all .pt links are posted
           url = "https://github.com/openai/whisper/discussions/2"
-
           resp = requests.get(url)
-          # Simple regex to find Azure Edge model URLs
-          pattern = r'https://openaipublic\.azureedge\.net/main/whisper/models/[a-f0-9]+/[^"'\s#?]+\.pt'
+
+          # Corrected regex (no stray single quote)
+          pattern = r'https://openaipublic\.azureedge\.net/main/whisper/models/[a-f0-9]+/[^"\s#?]+\.pt'
           links = re.findall(pattern, resp.text)
 
           with open("whisper_models.txt", "w") as f:
